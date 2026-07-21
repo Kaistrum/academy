@@ -1,0 +1,13 @@
+{
+  "name": "Kaistrum Academy",
+  "short_name": "Kaistrum",
+  "description": "Project-based courses in mapping, spatial analysis, remote sensing and geospatial development.",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ],
+  "theme_color": "#2DD4BF",
+  "background_color": "#07090F",
+  "display": "standalone",
+  "start_url": "/"
+}

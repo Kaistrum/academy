@@ -3,69 +3,98 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useState,
   type ReactNode,
 } from "react";
-
-const STORAGE_KEY = "kaistrum-favourites";
-
-// Seeded so the very first (server + client) render is deterministic; the
-// user's real list is loaded from localStorage after mount.
-const SEED = ["utility-network-basics", "cartography-for-the-web"];
+import { useRouter } from "next/router";
+import { favourites as favouritesApi, type CourseCard } from "@/lib/api";
+import { useAuth } from "@/context/AuthContext";
 
 interface FavouritesValue {
+  /** Slugs of the signed-in learner's saved courses. */
   favourites: string[];
+  saved: CourseCard[];
+  loading: boolean;
   isFavourite: (slug: string) => boolean;
   toggle: (slug: string) => void;
+  reload: () => void;
 }
 
 const FavouritesContext = createContext<FavouritesValue>({
-  favourites: SEED,
+  favourites: [],
+  saved: [],
+  loading: false,
   isFavourite: () => false,
   toggle: () => {},
+  reload: () => {},
 });
 
 export function FavouritesProvider({ children }: { children: ReactNode }) {
-  const [favourites, setFavourites] = useState<string[]>(SEED);
-  const [loaded, setLoaded] = useState(false);
+  const router = useRouter();
+  const { user, status } = useAuth();
+  const [saved, setSaved] = useState<CourseCard[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [nonce, setNonce] = useState(0);
 
-  // Load persisted favourites once, on the client.
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) setFavourites(JSON.parse(raw));
-    } catch {
-      /* ignore malformed storage */
+    if (status !== "authenticated") {
+      setSaved([]);
+      return;
     }
-    setLoaded(true);
-  }, []);
+    let cancelled = false;
+    setLoading(true);
+    favouritesApi
+      .list()
+      .then(({ data }) => {
+        if (!cancelled) setSaved(data);
+      })
+      .catch(() => {
+        if (!cancelled) setSaved([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [status, user?.id, nonce]);
 
-  // Persist after the initial load so we don't clobber storage with the seed.
-  useEffect(() => {
-    if (!loaded) return;
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(favourites));
-    } catch {
-      /* storage may be unavailable */
-    }
-  }, [favourites, loaded]);
+  const favourites = useMemo(() => saved.map((c) => c.slug), [saved]);
 
-  const toggle = useCallback((slug: string) => {
-    setFavourites((prev) =>
-      prev.includes(slug) ? prev.filter((s) => s !== slug) : [...prev, slug],
-    );
-  }, []);
+  const isFavourite = useCallback((slug: string) => favourites.includes(slug), [favourites]);
 
-  const isFavourite = useCallback(
-    (slug: string) => favourites.includes(slug),
-    [favourites],
+  const toggle = useCallback(
+    (slug: string) => {
+      if (!user) {
+        router.push(`/signin?next=${encodeURIComponent(router.asPath)}`);
+        return;
+      }
+
+      const wasSaved = saved.some((c) => c.slug === slug);
+      // Optimistic: drop or stub the row now, reconcile from the server after.
+      setSaved((prev) =>
+        wasSaved
+          ? prev.filter((c) => c.slug !== slug)
+          : [...prev, { slug } as CourseCard],
+      );
+
+      const call = wasSaved ? favouritesApi.remove(slug) : favouritesApi.add(slug);
+      call
+        .then(() => setNonce((n) => n + 1))
+        .catch(() => setNonce((n) => n + 1));
+    },
+    [router, saved, user],
   );
 
-  return (
-    <FavouritesContext.Provider value={{ favourites, isFavourite, toggle }}>
-      {children}
-    </FavouritesContext.Provider>
+  const reload = useCallback(() => setNonce((n) => n + 1), []);
+
+  const value = useMemo<FavouritesValue>(
+    () => ({ favourites, saved, loading, isFavourite, toggle, reload }),
+    [favourites, saved, loading, isFavourite, toggle, reload],
   );
+
+  return <FavouritesContext.Provider value={value}>{children}</FavouritesContext.Provider>;
 }
 
 export function useFavourites() {

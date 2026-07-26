@@ -1,105 +1,185 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Head from "next/head";
 import Link from "next/link";
 import { useRouter } from "next/router";
 import { Button, Card, Input, Select, Switch, Textarea } from "@kaistrum/stratum-ui";
 import { ArrowLeft, BookOpen, Save, Trash2 } from "lucide-react";
 import AdminLayout from "@/components/admin/AdminLayout";
+import { useAsync } from "@/hooks/useAsync";
+import { useAuth } from "@/context/AuthContext";
 import {
-  categories,
-  formats,
-  levels,
+  ApiError,
+  admin,
+  type AdminCourseInput,
   type CourseFormat,
   type CourseLevel,
-} from "@/data/courses";
-import { useAdmin, type AdminCourse } from "@/context/AdminContext";
+  type CourseStatus,
+} from "@/lib/api";
+import { FORMAT_KEYS, FORMAT_LABELS, LEVEL_KEYS, LEVEL_LABELS } from "@/lib/catalog";
+import { invalidateTracks } from "@/hooks/useTracks";
 
 interface FormState {
   title: string;
   summary: string;
-  categorySlug: string;
-  tutorId: string;
+  description: string;
+  trackId: string;
+  instructorId: string;
   format: CourseFormat;
   level: CourseLevel;
   premium: boolean;
-  priceKES: number | null;
-  status: "draft" | "published";
+  priceKES: number;
+  originalPriceKES: number;
+  status: CourseStatus;
+  whatYouLearn: string;
+  requirements: string;
 }
+
+const EMPTY: FormState = {
+  title: "",
+  summary: "",
+  description: "",
+  trackId: "",
+  instructorId: "",
+  format: "web_course",
+  level: "beginner",
+  premium: false,
+  priceKES: 5900,
+  originalPriceKES: 0,
+  status: "draft",
+  whatYouLearn: "",
+  requirements: "",
+};
+
+const toLines = (value: string) =>
+  value
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
 
 export default function CourseEditor() {
   const router = useRouter();
-  const { getCourse, addCourse, updateCourse, deleteCourse, tutors, tracks, lessonCount } =
-    useAdmin();
+  const { status: authStatus, isAdmin } = useAuth();
 
   const editingSlug = typeof router.query.slug === "string" ? router.query.slug : null;
-  const existing = editingSlug ? getCourse(editingSlug) : undefined;
-  const isEdit = !!existing;
+  const isEdit = Boolean(editingSlug);
 
-  const [form, setForm] = useState<FormState>({
-    title: "",
-    summary: "",
-    categorySlug: tracks[0]?.slug ?? categories[0].slug,
-    tutorId: tutors[0]?.id ?? "",
-    format: "Web Course",
-    level: "Beginner",
-    premium: true,
-    priceKES: 5900,
-    status: "draft",
+  const tracksQuery = useAsync(() => admin.tracks(), [], {
+    enabled: authStatus === "authenticated",
   });
-  const [hydrated, setHydrated] = useState(false);
+  const tutorsQuery = useAsync(() => admin.tutors(), [], {
+    enabled: authStatus === "authenticated",
+  });
+  const existing = useAsync(() => admin.course(editingSlug as string), [editingSlug], {
+    enabled: authStatus === "authenticated" && isEdit,
+  });
+  const lessons = useAsync(() => admin.lessons(editingSlug as string), [editingSlug], {
+    enabled: authStatus === "authenticated" && isEdit,
+  });
 
-  // Populate from the existing course once the router is ready.
+  const [form, setForm] = useState<FormState>(EMPTY);
+  const [hydrated, setHydrated] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  const tracks = useMemo(() => tracksQuery.data ?? [], [tracksQuery.data]);
+  const tutors = useMemo(() => tutorsQuery.data?.data ?? [], [tutorsQuery.data]);
+
+  // Populate from the loaded course, or seed sensible defaults for a new one.
   useEffect(() => {
-    if (!router.isReady || hydrated) return;
-    if (isEdit && existing) {
+    if (hydrated) return;
+    if (isEdit) {
+      const c = existing.data;
+      if (!c) return;
       setForm({
-        title: existing.title,
-        summary: existing.summary,
-        categorySlug: existing.categorySlug,
-        tutorId: existing.tutorId,
-        format: existing.format,
-        level: existing.level,
-        premium: existing.premium,
-        priceKES: existing.priceKES,
-        status: existing.status,
+        title: c.title,
+        summary: c.summary ?? "",
+        description: (c.description ?? []).join("\n\n"),
+        trackId: c.track?.slug ?? "",
+        instructorId: c.instructorId ?? "",
+        format: c.format,
+        level: c.level,
+        premium: c.premium,
+        priceKES: c.priceKES ?? 0,
+        originalPriceKES: c.originalPriceKES ?? 0,
+        status: c.status,
+        whatYouLearn: (c.whatYouLearn ?? []).join("\n"),
+        requirements: (c.requirements ?? []).join("\n"),
       });
+      setHydrated(true);
+    } else if (tracks.length && tutors.length) {
+      setForm((f) => ({
+        ...f,
+        trackId: f.trackId || tracks[0].slug,
+        instructorId: f.instructorId || tutors[0].id,
+      }));
+      setHydrated(true);
     }
-    setHydrated(true);
-  }, [router.isReady, isEdit, existing, hydrated]);
+  }, [hydrated, isEdit, existing.data, tracks, tutors]);
 
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
 
-  function handleSave(e: React.FormEvent) {
+  async function handleSave(e: React.FormEvent) {
     e.preventDefault();
     if (!form.title.trim()) return;
-    const payload: Omit<AdminCourse, "slug" | "createdAt"> = {
-      ...form,
-      priceKES: form.premium ? form.priceKES ?? 0 : null,
-      // Course-level content lives on individual lessons now.
-      contentHTML: existing?.contentHTML ?? "",
-      lessons: existing?.lessons ?? 0,
-      learners: existing?.learners ?? "0",
-      rating: existing?.rating ?? 0,
+
+    const payload: AdminCourseInput = {
+      title: form.title.trim(),
+      summary: form.summary.trim(),
+      description: form.description
+        .split(/\n\s*\n/)
+        .map((p) => p.trim())
+        .filter(Boolean),
+      trackId: form.trackId || undefined,
+      format: form.format,
+      level: form.level,
+      premium: form.premium,
+      priceKES: form.premium ? Number(form.priceKES) : null,
+      originalPriceKES:
+        form.premium && Number(form.originalPriceKES) > 0
+          ? Number(form.originalPriceKES)
+          : null,
+      status: form.status,
+      whatYouLearn: toLines(form.whatYouLearn),
+      requirements: toLines(form.requirements),
     };
-    if (isEdit && editingSlug) {
-      updateCourse(editingSlug, payload);
-      router.push(`/admin/courses/view?slug=${editingSlug}`);
-    } else {
-      const slug = addCourse(payload);
-      // New course → straight to its page to start adding lessons.
-      router.push(`/admin/courses/view?slug=${slug}`);
+    // Only an admin may choose (or reassign) the instructor.
+    if (isAdmin && form.instructorId) payload.instructorId = form.instructorId;
+
+    setSaving(true);
+    setError(null);
+    setFieldErrors({});
+    try {
+      const saved = isEdit
+        ? await admin.updateCourse(editingSlug as string, payload)
+        : await admin.createCourse(payload);
+      invalidateTracks();
+      router.push(`/admin/courses/view?slug=${saved.slug}`);
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setError(err.message);
+        setFieldErrors(err.fields ?? {});
+      } else {
+        setError("Could not save the course.");
+      }
+    } finally {
+      setSaving(false);
     }
   }
 
-  function handleDelete() {
-    if (isEdit && editingSlug && confirm(`Delete "${existing?.title}"?`)) {
-      deleteCourse(editingSlug);
+  async function handleDelete() {
+    if (!editingSlug || !confirm(`Delete "${form.title}"?`)) return;
+    try {
+      await admin.deleteCourse(editingSlug);
+      invalidateTracks();
       router.push("/admin/courses");
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not delete the course.");
     }
   }
 
-  const lessons = editingSlug ? lessonCount(editingSlug) : 0;
+  const lessonCount = lessons.data?.length ?? 0;
 
   return (
     <AdminLayout
@@ -117,6 +197,12 @@ export default function CourseEditor() {
         <title>Admin · {isEdit ? "Edit" : "New"} course — Kaistrum Academy</title>
       </Head>
 
+      {error && (
+        <p className="mb-4 border border-danger/40 bg-danger/10 px-4 py-2 text-sm text-danger">
+          {error}
+        </p>
+      )}
+
       <form onSubmit={handleSave} className="grid gap-6 lg:grid-cols-[1fr_320px]">
         {/* Main */}
         <div className="flex flex-col gap-5">
@@ -130,14 +216,23 @@ export default function CourseEditor() {
                 placeholder="e.g. Spatial SQL Crash Course"
                 value={form.title}
                 onChange={(e) => set("title", e.target.value)}
+                error={fieldErrors.title}
                 required
               />
               <Textarea
                 label="Summary"
                 placeholder="One-line description shown on cards"
-                rows={3}
+                rows={2}
                 value={form.summary}
                 onChange={(e) => set("summary", e.target.value)}
+                error={fieldErrors.summary}
+              />
+              <Textarea
+                label="About this course"
+                placeholder="One paragraph per block — separate them with a blank line."
+                rows={6}
+                value={form.description}
+                onChange={(e) => set("description", e.target.value)}
               />
             </div>
           </Card>
@@ -149,27 +244,57 @@ export default function CourseEditor() {
             <div className="grid gap-4 sm:grid-cols-2">
               <Select
                 label="Track"
-                value={form.categorySlug}
-                onChange={(e) => set("categorySlug", e.target.value)}
-                options={tracks.map((c) => ({ value: c.slug, label: c.name }))}
+                value={form.trackId}
+                onChange={(e) => set("trackId", e.target.value)}
+                options={[
+                  { value: "", label: "No track" },
+                  ...tracks.map((t) => ({ value: t.slug, label: t.name })),
+                ]}
               />
               <Select
                 label="Tutor"
-                value={form.tutorId}
-                onChange={(e) => set("tutorId", e.target.value)}
-                options={tutors.map((t) => ({ value: t.id, label: t.name }))}
+                value={form.instructorId}
+                onChange={(e) => set("instructorId", e.target.value)}
+                disabled={!isAdmin}
+                options={
+                  tutors.length
+                    ? tutors.map((t) => ({ value: t.id, label: t.name }))
+                    : [{ value: "", label: "No tutors yet" }]
+                }
               />
               <Select
                 label="Format"
                 value={form.format}
                 onChange={(e) => set("format", e.target.value as CourseFormat)}
-                options={formats.map((f) => ({ value: f, label: f }))}
+                options={FORMAT_KEYS.map((f) => ({ value: f, label: FORMAT_LABELS[f] }))}
               />
               <Select
                 label="Level"
                 value={form.level}
                 onChange={(e) => set("level", e.target.value as CourseLevel)}
-                options={levels.map((l) => ({ value: l, label: l }))}
+                options={LEVEL_KEYS.map((l) => ({ value: l, label: LEVEL_LABELS[l] }))}
+              />
+            </div>
+          </Card>
+
+          <Card surface="card" padding="standard" className="border border-border">
+            <h2 className="mb-4 text-sm font-medium uppercase tracking-[0.12em] text-text-muted">
+              Outcomes
+            </h2>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Textarea
+                label="What you'll learn"
+                placeholder="One outcome per line"
+                rows={6}
+                value={form.whatYouLearn}
+                onChange={(e) => set("whatYouLearn", e.target.value)}
+              />
+              <Textarea
+                label="Requirements"
+                placeholder="One requirement per line"
+                rows={6}
+                value={form.requirements}
+                onChange={(e) => set("requirements", e.target.value)}
               />
             </div>
           </Card>
@@ -182,10 +307,10 @@ export default function CourseEditor() {
                   <BookOpen size={18} />
                 </span>
                 <div>
-                  <p className="text-sm font-medium">Lessons & content</p>
+                  <p className="text-sm font-medium">Lessons &amp; content</p>
                   <p className="text-sm text-text-dim">
                     {isEdit
-                      ? `${lessons} lesson${lessons === 1 ? "" : "s"}. Add lessons and write each lesson's content on the course page.`
+                      ? `${lessonCount} lesson${lessonCount === 1 ? "" : "s"}. Add lessons and write each lesson's content on the course page.`
                       : "Save the course first, then add lessons and their content."}
                   </p>
                 </div>
@@ -210,14 +335,20 @@ export default function CourseEditor() {
             <Select
               label="Status"
               value={form.status}
-              onChange={(e) => set("status", e.target.value as FormState["status"])}
+              onChange={(e) => set("status", e.target.value as CourseStatus)}
               options={[
                 { value: "draft", label: "Draft" },
                 { value: "published", label: "Published" },
               ]}
             />
             <div className="mt-5 flex flex-col gap-2">
-              <Button type="submit" variant="primary" fullWidth icon={<Save size={16} />}>
+              <Button
+                type="submit"
+                variant="primary"
+                fullWidth
+                loading={saving}
+                icon={<Save size={16} />}
+              >
                 {isEdit ? "Save changes" : "Create course"}
               </Button>
               {isEdit && (
@@ -245,14 +376,24 @@ export default function CourseEditor() {
               onChange={(e) => set("premium", e.target.checked)}
             />
             {form.premium && (
-              <div className="mt-4">
+              <div className="mt-4 flex flex-col gap-4">
                 <Input
                   type="number"
                   label="Price (KES)"
                   min={0}
                   step={100}
-                  value={form.priceKES ?? 0}
+                  value={form.priceKES}
                   onChange={(e) => set("priceKES", Number(e.target.value))}
+                  error={fieldErrors.priceKES}
+                />
+                <Input
+                  type="number"
+                  label="Was (KES, optional)"
+                  min={0}
+                  step={100}
+                  value={form.originalPriceKES}
+                  onChange={(e) => set("originalPriceKES", Number(e.target.value))}
+                  error={fieldErrors.originalPriceKES}
                 />
               </div>
             )}

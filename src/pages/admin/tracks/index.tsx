@@ -1,3 +1,4 @@
+import { useState } from "react";
 import Head from "next/head";
 import Link from "next/link";
 import { useRouter } from "next/router";
@@ -5,13 +6,33 @@ import { Button, IconButton } from "@kaistrum/stratum-ui";
 import { Layers, Pencil, Plus, Trash2 } from "lucide-react";
 import AdminLayout from "@/components/admin/AdminLayout";
 import { categoryIcons } from "@/components/categoryIcons";
-import { useAdmin } from "@/context/AdminContext";
+import { useAsync } from "@/hooks/useAsync";
+import { useAuth } from "@/context/AuthContext";
+import { ApiError, admin } from "@/lib/api";
+import { invalidateTracks } from "@/hooks/useTracks";
 
 export default function AdminTracks() {
   const router = useRouter();
-  const { tracks, courses, deleteTrack } = useAdmin();
+  const { status } = useAuth();
+  const [error, setError] = useState<string | null>(null);
 
-  const courseCount = (slug: string) => courses.filter((c) => c.categorySlug === slug).length;
+  const { data, loading, reload } = useAsync(() => admin.tracks(), [], {
+    enabled: status === "authenticated",
+  });
+  const tracks = data ?? [];
+
+  async function remove(slug: string, name: string) {
+    if (!confirm(`Delete track "${name}"?`)) return;
+    setError(null);
+    try {
+      await admin.deleteTrack(slug);
+      invalidateTracks();
+      reload();
+    } catch (err) {
+      // A track that still holds courses is refused with a 409.
+      setError(err instanceof ApiError ? err.message : "Could not delete that track.");
+    }
+  }
 
   return (
     <AdminLayout
@@ -29,9 +50,15 @@ export default function AdminTracks() {
       </Head>
 
       <p className="mb-4 max-w-2xl text-sm text-text-dim">
-        Tracks are the topic groupings learners browse by. Courses are assigned to a track
-        in the course editor.
+        Tracks are the topic groupings learners browse by. Courses are assigned to a track in
+        the course editor.
       </p>
+
+      {error && (
+        <p className="mb-4 border border-danger/40 bg-danger/10 px-4 py-2 text-sm text-danger">
+          {error}
+        </p>
+      )}
 
       <div className="overflow-x-auto border border-border">
         <table className="w-full min-w-[680px] text-sm">
@@ -45,8 +72,7 @@ export default function AdminTracks() {
           </thead>
           <tbody>
             {tracks.map((t) => {
-              const Icon = categoryIcons[t.icon];
-              const count = courseCount(t.slug);
+              const Icon = t.icon ? categoryIcons[t.icon] : undefined;
               return (
                 <tr
                   key={t.slug}
@@ -69,7 +95,9 @@ export default function AdminTracks() {
                     </div>
                   </td>
                   <td className="px-4 py-3 font-mono text-xs text-text-dim">{t.slug}</td>
-                  <td className="px-4 py-3 text-right tabular-nums text-text-dim">{count}</td>
+                  <td className="px-4 py-3 text-right tabular-nums text-text-dim">
+                    {t.courseCount}
+                  </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center justify-end gap-1">
                       <IconButton
@@ -84,21 +112,20 @@ export default function AdminTracks() {
                         size="sm"
                         variant="ghost"
                         icon={<Trash2 size={15} />}
-                        onClick={() => {
-                          if (count > 0) {
-                            alert(
-                              `“${t.name}” still has ${count} course(s). Reassign them before deleting.`,
-                            );
-                            return;
-                          }
-                          if (confirm(`Delete track "${t.name}"?`)) deleteTrack(t.slug);
-                        }}
+                        onClick={() => remove(t.slug, t.name)}
                       />
                     </div>
                   </td>
                 </tr>
               );
             })}
+            {tracks.length === 0 && (
+              <tr>
+                <td colSpan={4} className="px-4 py-10 text-center text-text-dim">
+                  {loading ? "Loading…" : "No tracks yet."}
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>

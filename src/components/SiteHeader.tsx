@@ -2,10 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/router";
-import { ThemeToggle } from "@kaistrum/stratum-ui";
-import { ArrowRight, ChevronDown, Menu, X } from "lucide-react";
-import { categories, courses } from "@/data/courses";
+import { Avatar, ThemeToggle } from "@kaistrum/stratum-ui";
+import { ArrowRight, ChevronDown, LogOut, Menu, ShieldCheck, X } from "lucide-react";
+import { courses as coursesApi, type CourseCard } from "@/lib/api";
 import { categoryIcons } from "@/components/categoryIcons";
+import { useAuth } from "@/context/AuthContext";
+import { useTracks } from "@/hooks/useTracks";
 
 const navLinks = [
 	{ label: "Explore tracks", href: "/tracks" },
@@ -13,10 +15,6 @@ const navLinks = [
 	{ label: "Saved", href: "/favourites" },
 	{ label: "For teams", href: "/#teams" }
 ];
-
-function coursesForTrack(name: string) {
-	return courses.filter((c) => c.category === name).slice(0, 3);
-}
 
 function Logo() {
 	return (
@@ -31,8 +29,12 @@ function Logo() {
 
 export default function SiteHeader() {
 	const router = useRouter();
+	const { user, isStaff, signOut } = useAuth();
+	const { tracks } = useTracks();
 	const [megaOpen, setMegaOpen] = useState(false);
 	const [mobileOpen, setMobileOpen] = useState(false);
+	const [userOpen, setUserOpen] = useState(false);
+	const [menuCourses, setMenuCourses] = useState<CourseCard[]>([]);
 	const headerRef = useRef<HTMLElement>(null);
 	const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -46,11 +48,25 @@ export default function SiteHeader() {
 		closeTimer.current = setTimeout(() => setMegaOpen(false), 120);
 	}
 
+	// The mega-menu's course lists are only worth fetching once it is opened.
+	useEffect(() => {
+		if (!megaOpen || menuCourses.length > 0) return;
+		coursesApi
+			.list({ pageSize: 60, sort: "popular" })
+			.then(({ data }) => setMenuCourses(data))
+			.catch(() => setMenuCourses([]));
+	}, [megaOpen, menuCourses.length]);
+
+	function coursesForTrack(trackId: string) {
+		return menuCourses.filter((c) => c.trackId === trackId).slice(0, 3);
+	}
+
 	// Close menus on route change.
 	useEffect(() => {
 		const close = () => {
 			setMegaOpen(false);
 			setMobileOpen(false);
+			setUserOpen(false);
 		};
 		router.events.on("routeChangeStart", close);
 		return () => router.events.off("routeChangeStart", close);
@@ -61,10 +77,14 @@ export default function SiteHeader() {
 		function onClick(e: MouseEvent) {
 			if (headerRef.current && !headerRef.current.contains(e.target as Node)) {
 				setMegaOpen(false);
+				setUserOpen(false);
 			}
 		}
 		function onKey(e: KeyboardEvent) {
-			if (e.key === "Escape") setMegaOpen(false);
+			if (e.key === "Escape") {
+				setMegaOpen(false);
+				setUserOpen(false);
+			}
 		}
 		document.addEventListener("mousedown", onClick);
 		document.addEventListener("keydown", onKey);
@@ -113,12 +133,66 @@ export default function SiteHeader() {
 				{/* Right actions */}
 				<div className="flex items-center gap-2">
 					<ThemeToggle />
-					<Link
-						href="/signin"
-						className="hidden bg-accent px-4 py-2 text-sm font-medium text-text-on-accent transition-colors hover:bg-accent-strong sm:inline-flex"
-					>
-						Sign in
-					</Link>
+					{user ? (
+						<div className="relative">
+							<button
+								type="button"
+								aria-expanded={userOpen}
+								aria-label="Account menu"
+								onClick={() => setUserOpen((v) => !v)}
+								className="flex items-center gap-2 px-1 py-1"
+							>
+								<Avatar name={user.name} size="sm" />
+								<ChevronDown size={14} className="hidden text-text-dim sm:block" />
+							</button>
+							{userOpen && (
+								<div className="absolute right-0 top-full z-50 mt-2 w-56 border border-border bg-drop-bg py-2 shadow-lg">
+									<div className="border-b border-border-subtle px-4 pb-2">
+										<p className="truncate text-sm font-medium">{user.name}</p>
+										<p className="truncate text-xs text-text-muted">{user.email}</p>
+									</div>
+									<Link
+										href="/my-learning"
+										className="block px-4 py-2 text-sm text-text-dim hover:bg-bg-surface hover:text-text"
+									>
+										My learning
+									</Link>
+									<Link
+										href="/favourites"
+										className="block px-4 py-2 text-sm text-text-dim hover:bg-bg-surface hover:text-text"
+									>
+										Saved courses
+									</Link>
+									{isStaff && (
+										<Link
+											href="/admin"
+											className="flex items-center gap-2 px-4 py-2 text-sm text-text-dim hover:bg-bg-surface hover:text-text"
+										>
+											<ShieldCheck size={14} /> Admin console
+										</Link>
+									)}
+									<button
+										type="button"
+										onClick={async () => {
+											setUserOpen(false);
+											await signOut();
+											router.push("/");
+										}}
+										className="flex w-full items-center gap-2 border-t border-border-subtle px-4 py-2 text-left text-sm text-text-dim hover:bg-bg-surface hover:text-text"
+									>
+										<LogOut size={14} /> Sign out
+									</button>
+								</div>
+							)}
+						</div>
+					) : (
+						<Link
+							href="/signin"
+							className="hidden bg-accent px-4 py-2 text-sm font-medium text-text-on-accent transition-colors hover:bg-accent-strong sm:inline-flex"
+						>
+							Sign in
+						</Link>
+					)}
 					<button
 						type="button"
 						aria-label="Toggle menu"
@@ -139,8 +213,8 @@ export default function SiteHeader() {
 				>
 					<div className="mx-auto max-w-6xl px-4 py-8 md:px-6">
 						<div className="grid grid-cols-4 gap-x-8 gap-y-7">
-							{categories.map((cat) => {
-								const Icon = categoryIcons[cat.icon];
+							{tracks.map((cat) => {
+								const Icon = cat.icon ? categoryIcons[cat.icon] : undefined;
 								return (
 									<div key={cat.slug}>
 										<div className="mb-2.5 flex items-center gap-2">
@@ -152,7 +226,7 @@ export default function SiteHeader() {
 											</span>
 										</div>
 										<ul className="flex flex-col gap-1.5">
-											{coursesForTrack(cat.name).map((c) => (
+											{coursesForTrack(cat.id).map((c) => (
 												<li key={c.slug}>
 													<Link
 														href={`/courses/${c.slug}`}
@@ -211,12 +285,25 @@ export default function SiteHeader() {
 								{l.label}
 							</Link>
 						))}
-						<Link
-							href="/signin"
-							className="mt-3 inline-flex w-fit bg-accent px-4 py-2 text-sm font-medium text-text-on-accent"
-						>
-							Sign in
-						</Link>
+						{user ? (
+							<button
+								type="button"
+								onClick={async () => {
+									await signOut();
+									router.push("/");
+								}}
+								className="mt-3 inline-flex w-fit border border-border px-4 py-2 text-sm font-medium text-text-dim"
+							>
+								Sign out
+							</button>
+						) : (
+							<Link
+								href="/signin"
+								className="mt-3 inline-flex w-fit bg-accent px-4 py-2 text-sm font-medium text-text-on-accent"
+							>
+								Sign in
+							</Link>
+						)}
 					</nav>
 				</div>
 			)}

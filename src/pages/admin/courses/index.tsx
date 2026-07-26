@@ -1,31 +1,46 @@
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import Head from "next/head";
 import Link from "next/link";
 import { useRouter } from "next/router";
 import { Badge, Button, IconButton } from "@kaistrum/stratum-ui";
 import { Eye, Pencil, Plus, Search, Trash2, Users } from "lucide-react";
 import AdminLayout from "@/components/admin/AdminLayout";
-import { formatKES } from "@/data/courses";
-import { revenueByCourse } from "@/data/payments";
-import { learnerCountForCourse } from "@/data/learners";
-import { useAdmin } from "@/context/AdminContext";
+import { useAsync } from "@/hooks/useAsync";
+import { useAuth } from "@/context/AuthContext";
+import { ApiError, admin } from "@/lib/api";
+import { formatDateISO, formatKES, shortDuration } from "@/lib/catalog";
 
 export default function AdminCourses() {
   const router = useRouter();
-  const { courses, tutors, deleteCourse, lessonCount } = useAdmin();
+  const { status } = useAuth();
   const [q, setQ] = useState("");
+  const [debouncedQ, setDebouncedQ] = useState("");
+  const [error, setError] = useState<string | null>(null);
 
-  const revenueMap = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const r of revenueByCourse()) m.set(r.course.slug, r.revenue);
-    return m;
-  }, []);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQ(q), 300);
+    return () => clearTimeout(timer);
+  }, [q]);
 
-  const tutorName = (id: string) => tutors.find((t) => t.id === id)?.name ?? "—";
-
-  const rows = courses.filter((c) =>
-    q ? c.title.toLowerCase().includes(q.toLowerCase()) : true,
+  const { data, loading, reload } = useAsync(
+    () => admin.courses({ q: debouncedQ.trim() || undefined }),
+    [debouncedQ],
+    { enabled: status === "authenticated" },
   );
+
+  const rows = data?.data ?? [];
+
+  async function remove(slug: string, title: string) {
+    if (!confirm(`Delete "${title}"? This cannot be undone.`)) return;
+    setError(null);
+    try {
+      await admin.deleteCourse(slug);
+      reload();
+    } catch (err) {
+      // Courses with learners are refused with a 409 — unpublish instead.
+      setError(err instanceof ApiError ? err.message : "Could not delete that course.");
+    }
+  }
 
   return (
     <AdminLayout
@@ -42,6 +57,12 @@ export default function AdminCourses() {
         <title>Admin · Courses — Kaistrum Academy</title>
       </Head>
 
+      {error && (
+        <p className="mb-4 border border-danger/40 bg-danger/10 px-4 py-2 text-sm text-danger">
+          {error}
+        </p>
+      )}
+
       <div className="relative mb-4 max-w-sm">
         <Search
           size={16}
@@ -56,50 +77,62 @@ export default function AdminCourses() {
       </div>
 
       <div className="overflow-x-auto border border-border">
-        <table className="w-full min-w-[760px] text-sm">
+        <table className="w-full min-w-[820px] text-sm">
           <thead>
             <tr className="border-b border-border bg-bg-surface text-left text-xs uppercase tracking-[0.1em] text-text-muted">
               <th className="px-4 py-3 font-medium">Course</th>
               <th className="px-4 py-3 font-medium">Tutor</th>
               <th className="px-4 py-3 font-medium">Price</th>
               <th className="px-4 py-3 text-right font-medium">Learners</th>
+              <th className="px-4 py-3 text-right font-medium">Duration</th>
               <th className="px-4 py-3 font-medium">Added</th>
               <th className="px-4 py-3 font-medium">Status</th>
-              <th className="px-4 py-3 text-right font-medium">Revenue</th>
               <th className="px-4 py-3 text-right font-medium">Actions</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((c) => (
-              <tr key={c.slug} className="border-b border-border-subtle last:border-0 hover:bg-bg-surface">
+              <tr
+                key={c.slug}
+                className="border-b border-border-subtle last:border-0 hover:bg-bg-surface"
+              >
                 <td className="px-4 py-3">
-                  <Link href={`/admin/courses/view?slug=${c.slug}`} className="font-medium hover:text-accent">
+                  <Link
+                    href={`/admin/courses/view?slug=${c.slug}`}
+                    className="font-medium hover:text-accent"
+                  >
                     {c.title}
                   </Link>
                   <div className="text-xs text-text-muted">
-                    {c.categorySlug} · {c.format} · {lessonCount(c.slug)} lessons
+                    {c.track?.name ?? "No track"} · {c.lessonCount} lessons
                   </div>
                 </td>
-                <td className="px-4 py-3 text-text-dim">{tutorName(c.tutorId)}</td>
+                <td className="px-4 py-3 text-text-dim">{c.instructor?.name ?? "—"}</td>
                 <td className="px-4 py-3">
-                  {c.premium && c.priceKES ? formatKES(c.priceKES) : <span className="text-success">Free</span>}
+                  {c.premium && c.priceKES ? (
+                    formatKES(c.priceKES)
+                  ) : (
+                    <span className="text-success">Free</span>
+                  )}
                 </td>
                 <td className="px-4 py-3 text-right tabular-nums">
                   <Link
                     href={`/admin/courses/view?slug=${c.slug}`}
                     className="inline-flex items-center gap-1.5 text-text-dim hover:text-accent"
                   >
-                    <Users size={13} /> {learnerCountForCourse(c.slug)}
+                    <Users size={13} /> {c.learnersCount}
                   </Link>
                 </td>
-                <td className="px-4 py-3 whitespace-nowrap text-text-dim">{c.createdAt}</td>
+                <td className="px-4 py-3 text-right tabular-nums text-text-dim">
+                  {shortDuration(c.durationMinutes)}
+                </td>
+                <td className="whitespace-nowrap px-4 py-3 text-text-dim">
+                  {formatDateISO(c.createdAt)}
+                </td>
                 <td className="px-4 py-3">
                   <Badge variant={c.status === "published" ? "success" : "neutral"}>
                     {c.status}
                   </Badge>
-                </td>
-                <td className="px-4 py-3 text-right tabular-nums text-text-dim">
-                  {formatKES(revenueMap.get(c.slug) ?? 0)}
                 </td>
                 <td className="px-4 py-3">
                   <div className="flex items-center justify-end gap-1">
@@ -122,11 +155,7 @@ export default function AdminCourses() {
                       size="sm"
                       variant="ghost"
                       icon={<Trash2 size={15} />}
-                      onClick={() => {
-                        if (confirm(`Delete "${c.title}"? This cannot be undone.`)) {
-                          deleteCourse(c.slug);
-                        }
-                      }}
+                      onClick={() => remove(c.slug, c.title)}
                     />
                   </div>
                 </td>
@@ -135,7 +164,7 @@ export default function AdminCourses() {
             {rows.length === 0 && (
               <tr>
                 <td colSpan={8} className="px-4 py-10 text-center text-text-dim">
-                  No courses match “{q}”.
+                  {loading ? "Loading…" : `No courses match “${q}”.`}
                 </td>
               </tr>
             )}

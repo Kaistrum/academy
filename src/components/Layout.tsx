@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/router";
 import { Footer } from "@kaistrum/stratum-ui";
 import SiteHeader from "@/components/SiteHeader";
-import { categories } from "@/data/courses";
+import { useTracks } from "@/hooks/useTracks";
 
 function Logo({ priority = false }: { priority?: boolean }) {
 	return (
@@ -31,7 +31,8 @@ function Logo({ priority = false }: { priority?: boolean }) {
 
 export default function Layout({ children }: { children: ReactNode }) {
 	const router = useRouter();
-	const year = 2026;
+	const { tracks } = useTracks();
+	const year = new Date().getFullYear();
 
 	return (
 		<div className="min-h-screen bg-bg text-text">
@@ -49,7 +50,7 @@ export default function Layout({ children }: { children: ReactNode }) {
 							{ label: "All courses", href: "/courses" },
 							{
 								label: "Learning paths",
-								href: "/courses?format=Learning%20Path"
+								href: "/courses?format=learning_path"
 							},
 							{
 								label: "Getting started",
@@ -60,7 +61,7 @@ export default function Layout({ children }: { children: ReactNode }) {
 					},
 					{
 						heading: "Topics",
-						links: categories.slice(0, 4).map((c) => ({
+						links: tracks.slice(0, 4).map((c) => ({
 							label: c.name,
 							href: `/courses?category=${c.slug}`
 						}))

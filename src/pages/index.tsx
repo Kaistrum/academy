@@ -8,15 +8,28 @@ import Layout from "@/components/Layout";
 import Contact from "@/components/Contact";
 import { CourseCard } from "@/components/CourseCard";
 import { categoryIcons } from "@/components/categoryIcons";
-import { categories, courses } from "@/data/courses";
+import { useAsync } from "@/hooks/useAsync";
+import { useTracks } from "@/hooks/useTracks";
+import { courses as coursesApi } from "@/lib/api";
+import { toViewCourse } from "@/lib/catalog";
 
 const popular = ["Spatial SQL", "Python", "Web maps", "Remote sensing", "3D scenes"];
 
 export default function Home() {
   const router = useRouter();
   const [query, setQuery] = useState("");
+  const { tracks } = useTracks();
 
-  const featured = courses.filter((c) => c.featured).slice(0, 6);
+  const featured = useAsync(() => coursesApi.featured(6), []);
+  // One page of the catalogue backs the headline numbers below.
+  const sample = useAsync(() => coursesApi.list({ pageSize: 100, sort: "popular" }), []);
+
+  const totalCourses = sample.data?.meta.total ?? 0;
+  const rated = (sample.data?.data ?? []).filter((c) => c.ratingCount > 0);
+  const averageRating = rated.length
+    ? (rated.reduce((sum, c) => sum + c.ratingAvg, 0) / rated.length).toFixed(1)
+    : "—";
+  const learners = (sample.data?.data ?? []).reduce((sum, c) => sum + c.learnersCount, 0);
 
   function submitSearch(e: React.FormEvent) {
     e.preventDefault();
@@ -46,7 +59,7 @@ export default function Home() {
         />
         <div className="relative mx-auto max-w-3xl px-4 py-20 text-center md:px-6 md:py-28">
           <Badge variant="accent" icon={<Sparkles size={12} />} className="mb-6">
-            120+ courses · updated for 2026
+            {totalCourses ? `${totalCourses} courses` : "Courses"} · {tracks.length} tracks
           </Badge>
           <h1 className="text-4xl font-semibold tracking-tight md:text-6xl">
             Explore our{" "}
@@ -101,10 +114,13 @@ export default function Home() {
       <Section spacing="compact" surface="bg">
         <dl className="grid grid-cols-2 gap-6 border-y border-border py-8 md:grid-cols-4">
           {[
-            { value: "120+", label: "Courses & tutorials" },
-            { value: "180k", label: "Learners worldwide" },
-            { value: "4.7★", label: "Average rating" },
-            { value: "8", label: "Topic tracks" },
+            { value: totalCourses ? String(totalCourses) : "—", label: "Courses & tutorials" },
+            {
+              value: learners ? learners.toLocaleString("en-KE") : "—",
+              label: "Enrolled learners",
+            },
+            { value: averageRating === "—" ? "—" : `${averageRating}★`, label: "Average rating" },
+            { value: tracks.length ? String(tracks.length) : "—", label: "Topic tracks" },
           ].map((s) => (
             <div key={s.label} className="text-center">
               <dt className="text-3xl font-semibold tracking-tight text-text md:text-4xl">
@@ -123,8 +139,8 @@ export default function Home() {
           <p className="mt-2 text-text-dim">Find your track and go deep.</p>
         </div>
         <Grid columns={4} gap="md">
-          {categories.map((cat) => {
-            const Icon = categoryIcons[cat.icon];
+          {tracks.map((cat) => {
+            const Icon = cat.icon ? categoryIcons[cat.icon] : undefined;
             return (
               <Link
                 key={cat.slug}
@@ -156,11 +172,24 @@ export default function Home() {
             View all courses <ArrowRight size={16} />
           </Link>
         </div>
-        <Grid columns={3} gap="md">
-          {featured.map((course) => (
-            <CourseCard key={course.slug} course={course} />
-          ))}
-        </Grid>
+
+        {featured.loading ? (
+          <Grid columns={3} gap="md">
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="h-72 animate-pulse border border-border bg-bg-card" />
+            ))}
+          </Grid>
+        ) : featured.error ? (
+          <p className="border border-dashed border-border bg-bg-card p-8 text-center text-text-dim">
+            {featured.error.message}
+          </p>
+        ) : (
+          <Grid columns={3} gap="md">
+            {(featured.data ?? []).map((course) => (
+              <CourseCard key={course.slug} course={toViewCourse(course)} />
+            ))}
+          </Grid>
+        )}
       </Section>
 
       {/* ── Contact ── */}

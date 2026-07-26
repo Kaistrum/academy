@@ -4,9 +4,17 @@ import { ArrowRight } from "lucide-react";
 import Layout from "@/components/Layout";
 import { CourseCard } from "@/components/CourseCard";
 import { categoryIcons } from "@/components/categoryIcons";
-import { categories, courses } from "@/data/courses";
+import { useAsync } from "@/hooks/useAsync";
+import { useTracks } from "@/hooks/useTracks";
+import { courses as coursesApi } from "@/lib/api";
+import { toViewCourse } from "@/lib/catalog";
 
 export default function TracksPage() {
+  const { tracks, loading: tracksLoading } = useTracks();
+  // One read of the catalogue is cheaper than a request per track.
+  const { data } = useAsync(() => coursesApi.list({ pageSize: 100, sort: "popular" }), []);
+  const all = data?.data ?? [];
+
   return (
     <Layout>
       <Head>
@@ -22,11 +30,11 @@ export default function TracksPage() {
         <div className="mx-auto max-w-6xl px-4 pb-10 pt-16 md:px-6 md:pt-20">
           <h1 className="text-3xl font-semibold tracking-tight md:text-4xl">Explore tracks</h1>
           <p className="mt-2 max-w-2xl text-text-dim">
-            {categories.length} tracks covering the full spatial-data workflow. Pick a track and
+            {tracks.length} tracks covering the full spatial-data workflow. Pick a track and
             go deep.
           </p>
           <div className="mt-6 flex flex-wrap gap-2">
-            {categories.map((cat) => (
+            {tracks.map((cat) => (
               <a
                 key={cat.slug}
                 href={`#${cat.slug}`}
@@ -40,10 +48,11 @@ export default function TracksPage() {
       </section>
 
       <div className="mx-auto max-w-6xl px-4 py-12 md:px-6">
+        {tracksLoading && <p className="text-text-dim">Loading tracks…</p>}
         <div className="flex flex-col gap-16">
-          {categories.map((cat) => {
-            const Icon = categoryIcons[cat.icon];
-            const trackCourses = courses.filter((c) => c.category === cat.name);
+          {tracks.map((cat) => {
+            const Icon = cat.icon ? categoryIcons[cat.icon] : undefined;
+            const trackCourses = all.filter((c) => c.trackId === cat.id);
             const shown = trackCourses.slice(0, 3);
             return (
               <section key={cat.slug} id={cat.slug} className="scroll-mt-24">
@@ -63,14 +72,14 @@ export default function TracksPage() {
                     href={`/courses?category=${cat.slug}`}
                     className="inline-flex items-center gap-1.5 text-sm font-medium text-accent hover:gap-2.5"
                   >
-                    View all {trackCourses.length} courses <ArrowRight size={16} />
+                    View all {cat.courseCount} courses <ArrowRight size={16} />
                   </Link>
                 </div>
 
                 {shown.length > 0 ? (
                   <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
                     {shown.map((course) => (
-                      <CourseCard key={course.slug} course={course} />
+                      <CourseCard key={course.slug} course={toViewCourse(course)} />
                     ))}
                   </div>
                 ) : (

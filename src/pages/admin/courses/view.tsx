@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useState } from "react";
 import Head from "next/head";
 import Link from "next/link";
 import { useRouter } from "next/router";
@@ -18,38 +18,39 @@ import {
 import { ArrowLeft, Clock, FileText, Pencil, Plus, Trash2 } from "lucide-react";
 import AdminLayout from "@/components/admin/AdminLayout";
 import { Stars } from "@/components/Stars";
-import { formatKES } from "@/data/courses";
-import { revenueByCourse } from "@/data/payments";
-import { learnerCountForCourse, learnersForCourse } from "@/data/learners";
-import { useAdmin } from "@/context/AdminContext";
+import { useAsync } from "@/hooks/useAsync";
+import { useAuth } from "@/context/AuthContext";
+import { ApiError, admin } from "@/lib/api";
+import { formatDate, formatKES, relativeTime, shortDuration } from "@/lib/catalog";
 
 export default function AdminCourseView() {
   const router = useRouter();
-  const { getCourse, tutors, reviewsForCourse, removeReview, lessonCount, courseDuration } =
-    useAdmin();
+  const { status } = useAuth();
+  const slug = typeof router.query.slug === "string" ? router.query.slug : null;
+  const enabled = status === "authenticated" && Boolean(slug);
 
-  // Resolve slug deterministically after mount (window.location is always
-  // available then), rather than waiting on router.query to hydrate.
-  const [slug, setSlug] = useState<string | null>(null);
-  const [ready, setReady] = useState(false);
-  useEffect(() => {
-    const fromRouter = typeof router.query.slug === "string" ? router.query.slug : null;
-    setSlug(fromRouter ?? new URLSearchParams(window.location.search).get("slug"));
-    setReady(true);
-  }, [router.query.slug]);
+  const course = useAsync(() => admin.course(slug as string), [slug], { enabled });
+  const lessons = useAsync(() => admin.lessons(slug as string), [slug], { enabled });
+  const roster = useAsync(() => admin.roster(slug as string), [slug], { enabled });
+  const reviews = useAsync(
+    () => admin.reviews({ courseId: course.data?.id }),
+    [course.data?.id],
+    { enabled: enabled && Boolean(course.data?.id) },
+  );
 
-  const course = slug ? getCourse(slug) : undefined;
+  if (course.loading || !slug) {
+    return (
+      <AdminLayout title="Course">
+        <p className="text-text-dim">Loading…</p>
+      </AdminLayout>
+    );
+  }
 
-  const revenue = useMemo(() => {
-    if (!slug) return 0;
-    return revenueByCourse().find((r) => r.course.slug === slug)?.revenue ?? 0;
-  }, [slug]);
-
-  if (!course) {
+  if (course.error || !course.data) {
     return (
       <AdminLayout title="Course">
         <p className="text-text-dim">
-          {ready ? "Course not found." : "Loading…"}{" "}
+          {course.error?.message ?? "Course not found."}{" "}
           <Link href="/admin/courses" className="text-accent hover:underline">
             Back to courses
           </Link>
@@ -58,27 +59,31 @@ export default function AdminCourseView() {
     );
   }
 
-  const roster = learnersForCourse(course.slug);
-  const reviews = reviewsForCourse(course.slug);
-  const tutorName = tutors.find((t) => t.id === course.tutorId)?.name ?? "—";
-  const avgRating =
-    reviews.length > 0
-      ? Math.round((reviews.reduce((s, r) => s + r.rating, 0) / reviews.length) * 10) / 10
-      : 0;
+  const c = course.data;
+  const lessonRows = lessons.data ?? [];
+  const rosterRows = roster.data?.data ?? [];
+  const reviewRows = reviews.data?.data ?? [];
+  const durationMins = lessonRows.reduce((sum, l) => sum + (l.minutes ?? 0), 0);
 
-  const durationMins = courseDuration(course.slug);
   const stats = [
-    { label: "Learners", value: String(learnerCountForCourse(course.slug)) },
-    { label: "Lessons", value: String(lessonCount(course.slug)) },
-    { label: "Duration", value: `${Math.floor(durationMins / 60)}h ${durationMins % 60}m` },
-    { label: "Reviews", value: String(reviews.length) },
-    { label: "Avg rating", value: avgRating ? avgRating.toFixed(1) : "—" },
-    { label: "Revenue", value: formatKES(revenue) },
+    { label: "Learners", value: String(c.learnersCount) },
+    { label: "Lessons", value: String(lessonRows.length) },
+    { label: "Duration", value: shortDuration(durationMins) },
+    { label: "Reviews", value: String(c.ratingCount) },
+    { label: "Avg rating", value: c.ratingCount ? c.ratingAvg.toFixed(1) : "—" },
+    { label: "Price", value: c.premium && c.priceKES ? formatKES(c.priceKES) : "Free" },
   ];
+
+  async function removeReview(id: string, author: string) {
+    if (!confirm(`Remove this review by ${author}?`)) return;
+    await admin.deleteReview(id).catch(() => {});
+    reviews.reload();
+    course.reload();
+  }
 
   return (
     <AdminLayout
-      title={course.title}
+      title={c.title}
       actions={
         <>
           <Link
@@ -87,7 +92,7 @@ export default function AdminCourseView() {
           >
             <ArrowLeft size={15} /> Back
           </Link>
-          <Link href={`/admin/courses/editor?slug=${course.slug}`}>
+          <Link href={`/admin/courses/editor?slug=${c.slug}`}>
             <Button variant="outline" icon={<Pencil size={15} />}>
               Edit course
             </Button>
@@ -96,20 +101,20 @@ export default function AdminCourseView() {
       }
     >
       <Head>
-        <title>Admin · {course.title} — Kaistrum Academy</title>
+        <title>Admin · {c.title} — Kaistrum Academy</title>
       </Head>
 
       {/* Meta */}
       <div className="mb-5 flex flex-wrap items-center gap-2 text-sm text-text-dim">
-        <Badge variant="accent">{course.categorySlug}</Badge>
+        <Badge variant="accent">{c.track?.name ?? "No track"}</Badge>
         <span>·</span>
-        <span>{tutorName}</span>
+        <span>{c.instructor?.name ?? "Unassigned"}</span>
         <span>·</span>
-        <span>{course.premium && course.priceKES ? formatKES(course.priceKES) : "Free"}</span>
+        <Badge variant={c.status === "published" ? "success" : "neutral"}>{c.status}</Badge>
         <span>·</span>
-        <Badge variant={course.status === "published" ? "success" : "neutral"}>
-          {course.status}
-        </Badge>
+        <Link href={`/courses/${c.slug}`} className="text-accent hover:underline">
+          View public page
+        </Link>
       </div>
 
       {/* Stats */}
@@ -124,20 +129,30 @@ export default function AdminCourseView() {
 
       <Tabs defaultValue="lessons">
         <TabsList>
-          <TabsTrigger value="lessons">Lessons ({lessonCount(course.slug)})</TabsTrigger>
-          <TabsTrigger value="learners">Learners ({roster.length})</TabsTrigger>
-          <TabsTrigger value="reviews">Reviews ({reviews.length})</TabsTrigger>
+          <TabsTrigger value="lessons">Lessons ({lessonRows.length})</TabsTrigger>
+          <TabsTrigger value="learners">Learners ({roster.data?.meta.total ?? 0})</TabsTrigger>
+          <TabsTrigger value="reviews">Reviews ({reviews.data?.meta.total ?? 0})</TabsTrigger>
         </TabsList>
 
         {/* Lessons */}
         <TabsContent value="lessons">
-          <LessonsPanel slug={course.slug} />
+          <LessonsPanel
+            slug={c.slug}
+            lessons={lessonRows}
+            loading={lessons.loading}
+            onChanged={() => {
+              lessons.reload();
+              course.reload();
+            }}
+          />
         </TabsContent>
 
         {/* Learners */}
         <TabsContent value="learners">
-          {roster.length === 0 ? (
-            <p className="py-8 text-center text-text-dim">No learners enrolled yet.</p>
+          {rosterRows.length === 0 ? (
+            <p className="py-8 text-center text-text-dim">
+              {roster.loading ? "Loading…" : "No learners enrolled yet."}
+            </p>
           ) : (
             <div className="mt-2 overflow-x-auto border border-border">
               <table className="w-full min-w-[720px] text-sm">
@@ -151,24 +166,29 @@ export default function AdminCourseView() {
                   </tr>
                 </thead>
                 <tbody>
-                  {roster.map((l) => (
+                  {rosterRows.map((l) => (
                     <tr
-                      key={l.id}
+                      key={l.enrollmentId}
                       className="border-b border-border-subtle last:border-0 hover:bg-bg-surface"
                     >
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-3">
                           <Avatar name={l.name} size="sm" />
                           <div className="min-w-0">
-                            <p className="font-medium">{l.name}</p>
+                            <Link
+                              href={`/admin/learners/view?id=${l.userId}`}
+                              className="font-medium hover:text-accent"
+                            >
+                              {l.name}
+                            </Link>
                             <p className="truncate text-xs text-text-muted">{l.email}</p>
                           </div>
                         </div>
                       </td>
-                      <td className="px-4 py-3 text-text-dim">{l.enrolledAt}</td>
+                      <td className="px-4 py-3 text-text-dim">{formatDate(l.enrolledAt)}</td>
                       <td className="px-4 py-3">
                         <div className="w-32">
-                          <Progress value={l.progress} showValue />
+                          <Progress value={l.progressPct} showValue />
                         </div>
                       </td>
                       <td className="px-4 py-3">
@@ -176,7 +196,9 @@ export default function AdminCourseView() {
                           {l.status}
                         </Badge>
                       </td>
-                      <td className="px-4 py-3 text-text-muted">{l.lastActive}</td>
+                      <td className="px-4 py-3 text-text-muted">
+                        {relativeTime(l.lastAccessedAt)}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -187,75 +209,116 @@ export default function AdminCourseView() {
 
         {/* Reviews */}
         <TabsContent value="reviews">
-          {reviews.length === 0 ? (
-            <p className="py-8 text-center text-text-dim">No reviews for this course.</p>
+          {reviewRows.length === 0 ? (
+            <p className="py-8 text-center text-text-dim">
+              {reviews.loading ? "Loading…" : "No reviews for this course."}
+            </p>
           ) : (
             <div className="mt-2 flex flex-col gap-3">
-              {reviews.map((r) => (
-                <Card
-                  key={r.id}
-                  surface="card"
-                  padding="standard"
-                  className="border border-border"
-                >
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="flex gap-3">
-                      <Avatar name={r.author} size="md" />
-                      <div>
-                        <div className="flex flex-wrap items-center gap-2.5">
-                          <span className="font-medium">{r.author}</span>
-                          <Stars rating={r.rating} size={13} />
-                          <span className="text-xs text-text-muted">{r.date}</span>
+              {reviewRows.map((r) => {
+                const author = r.author?.name ?? "Learner";
+                return (
+                  <Card
+                    key={r.id}
+                    surface="card"
+                    padding="standard"
+                    className="border border-border"
+                  >
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="flex gap-3">
+                        <Avatar name={author} size="md" />
+                        <div>
+                          <div className="flex flex-wrap items-center gap-2.5">
+                            <span className="font-medium">{author}</span>
+                            <Stars rating={r.rating} size={13} />
+                            <span className="text-xs text-text-muted">
+                              {formatDate(r.createdAt)}
+                            </span>
+                          </div>
+                          <p className="mt-1.5 text-sm text-text-dim">{r.body}</p>
                         </div>
-                        <p className="mt-1.5 text-sm text-text-dim">{r.body}</p>
                       </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        icon={<Trash2 size={14} />}
+                        onClick={() => removeReview(r.id, author)}
+                      >
+                        Remove
+                      </Button>
                     </div>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      icon={<Trash2 size={14} />}
-                      onClick={() => {
-                        if (confirm(`Remove this review by ${r.author}?`)) removeReview(r.id);
-                      }}
-                    >
-                      Remove
-                    </Button>
-                  </div>
-                </Card>
-              ))}
+                  </Card>
+                );
+              })}
             </div>
           )}
         </TabsContent>
       </Tabs>
-
     </AdminLayout>
   );
 }
 
-function LessonsPanel({ slug }: { slug: string }) {
+function LessonsPanel({
+  slug,
+  lessons,
+  loading,
+  onChanged,
+}: {
+  slug: string;
+  lessons: import("@/lib/api").LessonSummary[];
+  loading: boolean;
+  onChanged: () => void;
+}) {
   const router = useRouter();
-  const { lessonsForCourse, courseDuration, addLesson, deleteLesson } = useAdmin();
-  const lessons = lessonsForCourse(slug);
-  const total = courseDuration(slug);
-
   const [title, setTitle] = useState("");
   const [minutes, setMinutes] = useState(10);
+  const [section, setSection] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  function submitAdd(e: React.FormEvent) {
+  const total = lessons.reduce((n, l) => n + (l.minutes ?? 0), 0);
+  const sections = [...new Set(lessons.map((l) => l.sectionTitle))];
+
+  async function submitAdd(e: React.FormEvent) {
     e.preventDefault();
     if (!title.trim()) return;
-    // Create the lesson, then jump into its content editor.
-    const id = addLesson(slug, { title: title.trim(), minutes: Math.max(0, minutes) });
-    setTitle("");
-    setMinutes(10);
-    router.push(`/admin/courses/lesson?course=${slug}&lesson=${id}`);
+    setBusy(true);
+    setError(null);
+    try {
+      // Group new lessons under the chosen section, defaulting to the last one.
+      const sectionTitle = section || sections[sections.length - 1] || "Course content";
+      const sectionOrder = Math.max(0, sections.indexOf(sectionTitle));
+      const lesson = await admin.createLesson(slug, {
+        title: title.trim(),
+        minutes: Math.max(0, minutes),
+        sectionTitle,
+        sectionOrder: sectionOrder === -1 ? sections.length : sectionOrder,
+      });
+      setTitle("");
+      setMinutes(10);
+      onChanged();
+      router.push(`/admin/courses/lesson?course=${slug}&lesson=${lesson.id}`);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not add the lesson.");
+    } finally {
+      setBusy(false);
+    }
   }
 
-  const emptyBody = (html: string) =>
-    !html || html.replace(/<[^>]*>/g, "").trim().length === 0;
+  async function remove(id: string, lessonTitle: string) {
+    if (!confirm(`Delete lesson "${lessonTitle}"?`)) return;
+    await admin.deleteLesson(slug, id).catch(() => {});
+    onChanged();
+  }
 
   return (
     <div className="mt-2">
+      {error && (
+        <p className="mb-3 border border-danger/40 bg-danger/10 px-4 py-2 text-sm text-danger">
+          {error}
+        </p>
+      )}
+
       {/* Add lesson */}
       <form
         onSubmit={submitAdd}
@@ -269,7 +332,15 @@ function LessonsPanel({ slug }: { slug: string }) {
             onChange={(e) => setTitle(e.target.value)}
           />
         </div>
-        <div className="w-full sm:w-40">
+        <div className="w-full sm:w-48">
+          <Input
+            label="Section"
+            placeholder={sections[sections.length - 1] ?? "Course content"}
+            value={section}
+            onChange={(e) => setSection(e.target.value)}
+          />
+        </div>
+        <div className="w-full sm:w-36">
           <Input
             type="number"
             label="Duration (min)"
@@ -279,13 +350,15 @@ function LessonsPanel({ slug }: { slug: string }) {
             onChange={(e) => setMinutes(Number(e.target.value))}
           />
         </div>
-        <Button type="submit" variant="primary" icon={<Plus size={16} />}>
-          Add & write
+        <Button type="submit" variant="primary" loading={busy} icon={<Plus size={16} />}>
+          Add &amp; write
         </Button>
       </form>
 
       {lessons.length === 0 ? (
-        <p className="py-8 text-center text-text-dim">No lessons yet — add the first one above.</p>
+        <p className="py-8 text-center text-text-dim">
+          {loading ? "Loading…" : "No lessons yet — add the first one above."}
+        </p>
       ) : (
         <>
           <div className="border border-border">
@@ -300,14 +373,9 @@ function LessonsPanel({ slug }: { slug: string }) {
                     className="min-w-0 flex-1 truncate text-sm hover:text-accent"
                   >
                     {l.title}
+                    <span className="ml-2 text-xs text-text-muted">{l.sectionTitle}</span>
                   </Link>
-                  {emptyBody(l.contentHTML) ? (
-                    <Badge variant="warning">No content</Badge>
-                  ) : (
-                    <Badge variant="neutral" icon={<FileText size={11} />}>
-                      Content
-                    </Badge>
-                  )}
+                  {l.isPreview && <Badge variant="outline">Preview</Badge>}
                   <span className="inline-flex shrink-0 items-center gap-1.5 text-xs text-text-dim">
                     <Clock size={13} /> {l.minutes} min
                   </span>
@@ -325,16 +393,14 @@ function LessonsPanel({ slug }: { slug: string }) {
                     size="sm"
                     variant="ghost"
                     icon={<Trash2 size={14} />}
-                    onClick={() => {
-                      if (confirm(`Delete lesson "${l.title}"?`)) deleteLesson(l.id);
-                    }}
+                    onClick={() => remove(l.id, l.title)}
                   />
                 </li>
               ))}
             </ul>
           </div>
-          <p className="mt-3 text-xs text-text-muted">
-            {lessons.length} lessons · {Math.floor(total / 60)}h {total % 60}m total
+          <p className="mt-3 flex items-center gap-2 text-xs text-text-muted">
+            <FileText size={12} /> {lessons.length} lessons · {shortDuration(total)} total
           </p>
         </>
       )}

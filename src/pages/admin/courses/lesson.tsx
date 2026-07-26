@@ -2,38 +2,42 @@ import { useEffect, useState } from "react";
 import Head from "next/head";
 import Link from "next/link";
 import { useRouter } from "next/router";
-import { Breadcrumb, Button, Card, Input } from "@kaistrum/stratum-ui";
+import { Breadcrumb, Button, Card, Input, Switch } from "@kaistrum/stratum-ui";
 import { useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { Link as TiptapLink, RichTextEditor } from "@mantine/tiptap";
 import { ArrowLeft, Save, Trash2 } from "lucide-react";
 import AdminLayout from "@/components/admin/AdminLayout";
-import { useAdmin } from "@/context/AdminContext";
+import { useAsync } from "@/hooks/useAsync";
+import { useAuth } from "@/context/AuthContext";
+import { ApiError, admin } from "@/lib/api";
 
 export default function LessonEditor() {
   const router = useRouter();
-  const { getLesson, getCourse, updateLesson, deleteLesson } = useAdmin();
+  const { status } = useAuth();
 
-  // Resolve ?course= & ?lesson= deterministically after mount.
-  const [ids, setIds] = useState<{ course: string | null; lesson: string | null }>({
-    course: null,
-    lesson: null,
+  const courseSlug = typeof router.query.course === "string" ? router.query.course : null;
+  const lessonId = typeof router.query.lesson === "string" ? router.query.lesson : null;
+  const enabled = status === "authenticated" && Boolean(courseSlug && lessonId);
+
+  const course = useAsync(() => admin.course(courseSlug as string), [courseSlug], {
+    enabled: status === "authenticated" && Boolean(courseSlug),
   });
-  const [ready, setReady] = useState(false);
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const course = (router.query.course as string) ?? params.get("course");
-    const lesson = (router.query.lesson as string) ?? params.get("lesson");
-    setIds({ course, lesson });
-    setReady(true);
-  }, [router.query.course, router.query.lesson]);
-
-  const lesson = ids.lesson ? getLesson(ids.lesson) : undefined;
-  const course = ids.course ? getCourse(ids.course) : undefined;
+  const lesson = useAsync(
+    () => admin.lesson(courseSlug as string, lessonId as string),
+    [courseSlug, lessonId],
+    { enabled },
+  );
 
   const [title, setTitle] = useState("");
+  const [sectionTitle, setSectionTitle] = useState("");
   const [minutes, setMinutes] = useState(0);
+  const [videoUrl, setVideoUrl] = useState("");
+  const [isPreview, setIsPreview] = useState(false);
   const [hydrated, setHydrated] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
 
   const editor = useEditor({
     extensions: [StarterKit, TiptapLink],
@@ -42,46 +46,70 @@ export default function LessonEditor() {
   });
 
   useEffect(() => {
-    if (hydrated || !lesson || !editor) return;
-    setTitle(lesson.title);
-    setMinutes(lesson.minutes);
-    editor.commands.setContent(
-      lesson.contentHTML || "<p>Write the lesson content here…</p>",
-    );
+    if (hydrated || !lesson.data || !editor) return;
+    setTitle(lesson.data.title);
+    setSectionTitle(lesson.data.sectionTitle);
+    setMinutes(lesson.data.minutes);
+    setVideoUrl(lesson.data.videoUrl ?? "");
+    setIsPreview(lesson.data.isPreview);
+    editor.commands.setContent(lesson.data.contentHTML || "<p>Write the lesson content here…</p>");
     setHydrated(true);
-  }, [hydrated, lesson, editor]);
+  }, [hydrated, lesson.data, editor]);
 
-  const backHref = ids.course ? `/admin/courses/view?slug=${ids.course}` : "/admin/courses";
+  const backHref = courseSlug ? `/admin/courses/view?slug=${courseSlug}` : "/admin/courses";
 
-  if (!lesson || !course) {
+  async function handleSave(e: React.FormEvent) {
+    e.preventDefault();
+    if (!courseSlug || !lessonId || !title.trim()) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await admin.updateLesson(courseSlug, lessonId, {
+        title: title.trim(),
+        sectionTitle: sectionTitle.trim() || "Course content",
+        minutes: Math.max(0, minutes),
+        isPreview,
+        videoUrl: videoUrl.trim(),
+        contentHTML: editor?.getHTML() ?? "",
+      });
+      setSaved(true);
+      router.push(backHref);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not save the lesson.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDelete() {
+    if (!courseSlug || !lessonId || !confirm(`Delete lesson "${title}"?`)) return;
+    try {
+      await admin.deleteLesson(courseSlug, lessonId);
+      router.push(backHref);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not delete the lesson.");
+    }
+  }
+
+  if (lesson.loading || course.loading) {
+    return (
+      <AdminLayout title="Lesson">
+        <p className="text-text-dim">Loading…</p>
+      </AdminLayout>
+    );
+  }
+
+  if (lesson.error || !lesson.data || !course.data) {
     return (
       <AdminLayout title="Lesson">
         <p className="text-text-dim">
-          {ready ? "Lesson not found." : "Loading…"}{" "}
+          {lesson.error?.message ?? "Lesson not found."}{" "}
           <Link href={backHref} className="text-accent hover:underline">
             Back to course
           </Link>
         </p>
       </AdminLayout>
     );
-  }
-
-  function handleSave(e: React.FormEvent) {
-    e.preventDefault();
-    if (!ids.lesson || !title.trim()) return;
-    updateLesson(ids.lesson, {
-      title: title.trim(),
-      minutes: Math.max(0, minutes),
-      contentHTML: editor?.getHTML() ?? "",
-    });
-    router.push(backHref);
-  }
-
-  function handleDelete() {
-    if (ids.lesson && confirm(`Delete lesson "${lesson?.title}"?`)) {
-      deleteLesson(ids.lesson);
-      router.push(backHref);
-    }
   }
 
   return (
@@ -104,15 +132,25 @@ export default function LessonEditor() {
         <Breadcrumb
           items={[
             { label: "Courses", href: "/admin/courses" },
-            { label: course.title, href: backHref },
-            { label: title || lesson.title },
+            { label: course.data.title, href: backHref },
+            { label: title || lesson.data.title },
           ]}
         />
       </div>
 
+      {error && (
+        <p className="mb-4 border border-danger/40 bg-danger/10 px-4 py-2 text-sm text-danger">
+          {error}
+        </p>
+      )}
+
       <form onSubmit={handleSave} className="grid gap-6 lg:grid-cols-[1fr_260px]">
         {/* Content */}
-        <Card surface="card" padding="standard" className="order-2 border border-border lg:order-1">
+        <Card
+          surface="card"
+          padding="standard"
+          className="order-2 border border-border lg:order-1"
+        >
           <div className="mb-2 flex items-center justify-between">
             <h2 className="text-sm font-medium uppercase tracking-[0.12em] text-text-muted">
               Lesson content
@@ -168,16 +206,41 @@ export default function LessonEditor() {
                 required
               />
               <Input
+                label="Section"
+                value={sectionTitle}
+                onChange={(e) => setSectionTitle(e.target.value)}
+                hint="Lessons are grouped by section in the player."
+              />
+              <Input
                 type="number"
                 label="Duration (min)"
                 min={0}
                 value={minutes}
                 onChange={(e) => setMinutes(Number(e.target.value))}
               />
+              <Input
+                type="url"
+                label="Video URL"
+                placeholder="https://…"
+                value={videoUrl}
+                onChange={(e) => setVideoUrl(e.target.value)}
+              />
+              <Switch
+                label="Free preview"
+                description="Visible without enrolling"
+                checked={isPreview}
+                onChange={(e) => setIsPreview(e.target.checked)}
+              />
             </div>
             <div className="mt-6 flex flex-col gap-2">
-              <Button type="submit" variant="primary" fullWidth icon={<Save size={16} />}>
-                Save lesson
+              <Button
+                type="submit"
+                variant="primary"
+                fullWidth
+                loading={saving}
+                icon={<Save size={16} />}
+              >
+                {saved ? "Saved" : "Save lesson"}
               </Button>
               <Button
                 type="button"

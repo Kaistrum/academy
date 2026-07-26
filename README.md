@@ -1,40 +1,93 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/pages/api-reference/create-next-app).
+# Kaistrum Academy — front end
 
-## Getting Started
+Next.js 16 (Pages Router) client for the Kaistrum Academy API. Every screen —
+catalogue, course detail, the Tiptap lesson player, enrolment and progress,
+favourites, reviews, certificates, checkout and the admin/instructor console —
+reads and writes the live API. There is no mock data in the app.
 
-First, run the development server:
+## Running it
+
+The API has to be up first (see `../Backend/README.md`):
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+cd ../Backend && pnpm seed:fresh && pnpm dev   # http://localhost:4000/api/v1
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Then:
 
-You can start editing the page by modifying `pages/index.tsx`. The page auto-updates as you edit the file.
+```bash
+npm install
+npm run dev                                    # http://localhost:3000
+```
 
-[API routes](https://nextjs.org/docs/pages/building-your-application/routing/api-routes) can be accessed on [http://localhost:3000/api/hello](http://localhost:3000/api/hello). This endpoint can be edited in `pages/api/hello.ts`.
+`.env.local` points the browser at the API:
 
-The `pages/api` directory is mapped to `/api/*`. Files in this directory are treated as [API routes](https://nextjs.org/docs/pages/building-your-application/routing/api-routes) instead of React pages.
+```
+NEXT_PUBLIC_API_URL=http://localhost:4000/api/v1
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/pages/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+That origin must appear in the backend's `CORS_ORIGINS`, and requests are sent
+with credentials so the `ka_refresh` cookie survives the round trip.
 
-## Learn More
+Seeded logins: `admin@kaistrum.com` / `Admin12345`, `grace.wanjiru@kaistrum.com`
+/ `Tutor12345`, `learner@kaistrum.com` / `Learner12345`.
 
-To learn more about Next.js, take a look at the following resources:
+## How the API layer is put together
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn-pages-router) - an interactive Next.js tutorial.
+```
+src/lib/api/
+  client.ts     fetch wrapper: base URL, bearer token, one refresh-and-retry
+                on 401, `ApiError` carrying the server's code/fields/checkout
+  types.ts      TypeScript mirrors of every response shape
+  index.ts      one function per endpoint, grouped as the API groups them
+src/lib/catalog.ts   enum labels, money/duration/date formatting, and the
+                     API-course → view-model adapter the components render
+src/hooks/useAsync.ts  loads on dep change, ignores superseded runs, `reload()`
+src/context/    AuthContext · EnrollmentsContext · FavouritesContext
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Pages never build URLs or parse envelopes: they call `courses.list(…)`,
+`admin.updateCourse(…)` and so on, and render the result.
 
-## Deploy on Vercel
+**Tokens.** The 15-minute access token lives in memory and `localStorage`; the
+rotating refresh token is held both as the API's `httpOnly` cookie and as a
+stored copy, so a browser that drops third-party cookies still refreshes. A 401
+triggers exactly one refresh attempt, shared between concurrent callers, before
+the original request is replayed; if that fails the session is cleared and the
+UI falls back to signed-out.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+**Data fetching is client-side.** Course pages have no `getStaticProps` — the
+response depends on who is asking (enrolment, favourite and lock state), and the
+token only exists in the browser.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/pages/building-your-application/deploying) for more details.
+**Enrolment.** `POST /courses/:slug/enroll` answers `402` with a `checkout`
+block for premium courses; the detail page catches that, calls
+`POST /courses/:slug/checkout` and redirects to Paystack. Paystack returns to
+`/checkout/callback`, which verifies the reference server-side (idempotent — the
+webhook may have granted access already).
+
+**Progress** is never computed in the client. "Mark complete & continue" calls
+`PUT /enrollments/:id/lessons/:lessonId/complete` and re-reads the curriculum.
+
+**Roles.** `/admin` is gated on `role` — instructors see the console scoped to
+their own courses, admins see everything. The API enforces this independently;
+the client-side guard only avoids a wall of 403s.
+
+## Routes
+
+| Page | Endpoints |
+|------|-----------|
+| `/` | `GET /tracks`, `GET /courses/featured`, `GET /courses` |
+| `/courses` | `GET /courses` (server-side search, filter, sort, paging) |
+| `/courses/[slug]` | detail, curriculum, related, reviews, enrol/checkout, favourite, certificate |
+| `/courses/[slug]/learn` | curriculum, lesson body, complete/uncomplete |
+| `/my-learning` | `GET /me/enrollments`, `GET /users/me/stats`, certificate download |
+| `/favourites` | `GET /me/favourites` |
+| `/signin` | login, register, forgot password, `GET /auth/providers`, OAuth start |
+| `/auth/callback` | `POST /auth/oauth/exchange` |
+| `/checkout/callback` | `GET /payments/:reference/verify` |
+| `/verify-email`, `/reset-password` | the links the API emails |
+| `/admin/**` | the `/admin` back office |
+
+> `schema.md` in this folder is the original contract sketch written before the
+> API existed. `../Backend/README.md` is the authoritative reference.

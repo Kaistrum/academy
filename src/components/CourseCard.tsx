@@ -1,12 +1,13 @@
 import Link from "next/link";
 import { Badge, Card } from "@kaistrum/stratum-ui";
 import { Check, Clock, Heart, Lock, PlayCircle } from "lucide-react";
-import { type Course, formatDuration } from "@/data/courses";
-import { getEnrollment } from "@/data/enrollment";
+import { formatDuration, formatKES, type ViewCourse } from "@/lib/catalog";
+import { useEnrollments } from "@/context/EnrollmentsContext";
 import { useFavourites } from "@/context/FavouritesContext";
 import { Stars } from "@/components/Stars";
 
-export function CourseCard({ course }: { course: Course }) {
+export function CourseCard({ course }: { course: ViewCourse }) {
+  const { getEnrollment } = useEnrollments();
   const enrollment = getEnrollment(course.slug);
   const { isFavourite, toggle } = useFavourites();
   const favourite = isFavourite(course.slug);
@@ -32,7 +33,7 @@ export function CourseCard({ course }: { course: Course }) {
               </Badge>
             ) : course.premium ? (
               <Badge variant="warning" icon={<Lock size={12} />}>
-                Premium
+                {course.priceKES ? formatKES(course.priceKES) : "Premium"}
               </Badge>
             ) : (
               <Badge variant="success">Free</Badge>
@@ -44,7 +45,7 @@ export function CourseCard({ course }: { course: Course }) {
           {enrollment && (
             <span
               className="absolute inset-x-0 bottom-0 h-1 bg-accent"
-              style={{ width: `${enrollment.progress}%` }}
+              style={{ width: `${enrollment.progressPct}%` }}
               aria-hidden
             />
           )}
@@ -99,7 +100,7 @@ export function CourseCard({ course }: { course: Course }) {
           </div>
           {enrollment && (
             <span className="text-xs font-medium text-accent">
-              {enrollment.progress}% complete
+              {enrollment.progressPct}% complete
             </span>
           )}
         </div>

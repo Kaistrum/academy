@@ -4,13 +4,13 @@ import { Button } from "@kaistrum/stratum-ui";
 import { Heart } from "lucide-react";
 import Layout from "@/components/Layout";
 import { CourseCard } from "@/components/CourseCard";
-import { courses } from "@/data/courses";
+import { useAuth } from "@/context/AuthContext";
 import { useFavourites } from "@/context/FavouritesContext";
+import { toViewCourse } from "@/lib/catalog";
 
 export default function FavouritesPage() {
-  const { favourites } = useFavourites();
-  // Preserve catalogue order for a stable layout.
-  const saved = courses.filter((c) => favourites.includes(c.slug));
+  const { status } = useAuth();
+  const { saved, loading } = useFavourites();
 
   return (
     <Layout>
@@ -38,7 +38,26 @@ export default function FavouritesPage() {
       </section>
 
       <div className="mx-auto max-w-6xl px-4 py-10 md:px-6">
-        {saved.length === 0 ? (
+        {status === "anonymous" ? (
+          <div className="border border-dashed border-border bg-bg-card p-12 text-center">
+            <Heart size={28} className="mx-auto text-text-muted" />
+            <p className="mt-3 text-lg font-medium">Sign in to see your saved courses</p>
+            <p className="mt-1 text-text-dim">
+              Favourites are tied to your account, so they follow you between devices.
+            </p>
+            <Link href="/signin?next=/favourites">
+              <Button variant="primary" className="mt-5">
+                Sign in
+              </Button>
+            </Link>
+          </div>
+        ) : loading ? (
+          <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="h-72 animate-pulse border border-border bg-bg-card" />
+            ))}
+          </div>
+        ) : saved.length === 0 ? (
           <div className="border border-dashed border-border bg-bg-card p-12 text-center">
             <Heart size={28} className="mx-auto text-text-muted" />
             <p className="mt-3 text-lg font-medium">No saved courses yet</p>
@@ -54,7 +73,7 @@ export default function FavouritesPage() {
         ) : (
           <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
             {saved.map((course) => (
-              <CourseCard key={course.slug} course={course} />
+              <CourseCard key={course.slug} course={toViewCourse(course)} />
             ))}
           </div>
         )}

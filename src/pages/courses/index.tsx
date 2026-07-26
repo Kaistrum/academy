@@ -22,43 +22,35 @@ import {
 import Layout from "@/components/Layout";
 import { CourseCard } from "@/components/CourseCard";
 import { Stars } from "@/components/Stars";
+import { useAsync } from "@/hooks/useAsync";
+import { useTracks } from "@/hooks/useTracks";
+import { courses as coursesApi, type CourseFormat, type CourseLevel } from "@/lib/api";
 import {
-  categories,
-  courses,
-  formats,
+  FORMAT_KEYS,
+  FORMAT_LABELS,
+  LEVEL_KEYS,
+  LEVEL_LABELS,
+  SORT_OPTIONS,
   formatDuration,
-  levels,
-  totalMinutes,
-  type Course,
-} from "@/data/courses";
+  formatKES,
+  toViewCourse,
+  type ViewCourse,
+} from "@/lib/catalog";
 
 const PAGE_SIZE = 6;
 
-type SortKey = "recent" | "rating" | "popular" | "az" | "shortest";
-
-const sortOptions = [
-  { value: "recent", label: "Recently Added" },
-  { value: "rating", label: "Highest Rated" },
-  { value: "popular", label: "Most Popular" },
-  { value: "az", label: "Title (A–Z)" },
-  { value: "shortest", label: "Shortest First" },
-];
-
-function parseLearners(s: string): number {
-  const n = parseFloat(s);
-  return s.toLowerCase().includes("k") ? n * 1000 : n;
-}
-
 export default function CoursesPage() {
   const router = useRouter();
+  const { tracks } = useTracks();
 
   const [q, setQ] = useState("");
+  const [debouncedQ, setDebouncedQ] = useState("");
   const [category, setCategory] = useState("all");
   const [format, setFormat] = useState("all");
   const [level, setLevel] = useState("all");
   const [freeOnly, setFreeOnly] = useState(false);
   const [premiumOnly, setPremiumOnly] = useState(false);
-  const [sort, setSort] = useState<SortKey>("recent");
+  const [sort, setSort] = useState("recent");
   const [view, setView] = useState<"grid" | "list">("grid");
   const [page, setPage] = useState(1);
 
@@ -66,61 +58,56 @@ export default function CoursesPage() {
   // like /courses?category=mapping or /courses?q=python from the home page).
   useEffect(() => {
     if (!router.isReady) return;
-    const { q: qq, category: c, format: f, access } = router.query;
-    if (typeof qq === "string") setQ(qq);
+    const { q: qq, category: c, format: f, level: l, access } = router.query;
+    if (typeof qq === "string") {
+      setQ(qq);
+      setDebouncedQ(qq);
+    }
     if (typeof c === "string") setCategory(c);
     if (typeof f === "string") setFormat(f);
+    if (typeof l === "string") setLevel(l);
     if (access === "free") setFreeOnly(true);
     if (access === "premium") setPremiumOnly(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router.isReady]);
 
-  const categoryName = useMemo(
-    () => categories.find((c) => c.slug === category)?.name ?? null,
-    [category],
-  );
-
-  const filtered = useMemo(() => {
-    let list = courses.slice();
-    const term = q.trim().toLowerCase();
-    if (term) {
-      list = list.filter(
-        (c) =>
-          c.title.toLowerCase().includes(term) ||
-          c.summary.toLowerCase().includes(term) ||
-          c.category.toLowerCase().includes(term),
-      );
-    }
-    if (categoryName) list = list.filter((c) => c.category === categoryName);
-    if (format !== "all") list = list.filter((c) => c.format === format);
-    if (level !== "all") list = list.filter((c) => c.level === level);
-    if (freeOnly) list = list.filter((c) => !c.premium);
-    if (premiumOnly) list = list.filter((c) => c.premium);
-
-    switch (sort) {
-      case "rating":
-        list.sort((a, b) => b.rating - a.rating);
-        break;
-      case "popular":
-        list.sort((a, b) => parseLearners(b.learners) - parseLearners(a.learners));
-        break;
-      case "az":
-        list.sort((a, b) => a.title.localeCompare(b.title));
-        break;
-      case "shortest":
-        list.sort((a, b) => totalMinutes(a) - totalMinutes(b));
-        break;
-      default:
-        list.sort((a, b) => b.addedOrder - a.addedOrder);
-    }
-    return list;
-  }, [q, categoryName, format, level, freeOnly, premiumOnly, sort]);
+  // Typing shouldn't fire a request per keystroke.
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQ(q), 300);
+    return () => clearTimeout(timer);
+  }, [q]);
 
   // Reset to page 1 whenever the result set changes.
-  useEffect(() => setPage(1), [q, category, format, level, freeOnly, premiumOnly, sort]);
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedQ, category, format, level, freeOnly, premiumOnly, sort]);
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const pageItems = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const access = freeOnly ? "free" : premiumOnly ? "premium" : undefined;
+
+  const { data, loading, error } = useAsync(
+    () =>
+      coursesApi.list({
+        q: debouncedQ.trim() || undefined,
+        category: category === "all" ? undefined : category,
+        format: format === "all" ? undefined : (format as CourseFormat),
+        level: level === "all" ? undefined : (level as CourseLevel),
+        access,
+        // Relevance is the server's default whenever `q` is present.
+        sort: debouncedQ.trim() && sort === "recent" ? undefined : sort,
+        page,
+        pageSize: PAGE_SIZE,
+      }),
+    [debouncedQ, category, format, level, access, sort, page],
+  );
+
+  const items = useMemo(() => (data?.data ?? []).map(toViewCourse), [data]);
+  const total = data?.meta.total ?? 0;
+  const totalPages = data?.meta.totalPages ?? 1;
+
+  const categoryName = useMemo(
+    () => tracks.find((t) => t.slug === category)?.name ?? null,
+    [tracks, category],
+  );
 
   const hasActiveFilters =
     q !== "" ||
@@ -132,6 +119,7 @@ export default function CoursesPage() {
 
   function clearAll() {
     setQ("");
+    setDebouncedQ("");
     setCategory("all");
     setFormat("all");
     setLevel("all");
@@ -154,8 +142,8 @@ export default function CoursesPage() {
             Explore our courses
           </h1>
           <p className="mt-2 max-w-2xl text-text-dim">
-            {courses.length} courses across {categories.length} tracks. Filter to find
-            exactly what you need.
+            {total} course{total === 1 ? "" : "s"} across {tracks.length} tracks. Filter to
+            find exactly what you need.
           </p>
 
           <div className="relative mt-6 max-w-xl">
@@ -186,7 +174,7 @@ export default function CoursesPage() {
                 onChange={(e) => setCategory(e.target.value)}
                 options={[
                   { value: "all", label: "All tracks" },
-                  ...categories.map((c) => ({ value: c.slug, label: c.name })),
+                  ...tracks.map((c) => ({ value: c.slug, label: c.name })),
                 ]}
               />
               <Select
@@ -195,7 +183,7 @@ export default function CoursesPage() {
                 onChange={(e) => setFormat(e.target.value)}
                 options={[
                   { value: "all", label: "All formats" },
-                  ...formats.map((f) => ({ value: f, label: f })),
+                  ...FORMAT_KEYS.map((f) => ({ value: f, label: FORMAT_LABELS[f] })),
                 ]}
               />
               <Select
@@ -204,7 +192,7 @@ export default function CoursesPage() {
                 onChange={(e) => setLevel(e.target.value)}
                 options={[
                   { value: "all", label: "All levels" },
-                  ...levels.map((l) => ({ value: l, label: l })),
+                  ...LEVEL_KEYS.map((l) => ({ value: l, label: LEVEL_LABELS[l] })),
                 ]}
               />
 
@@ -248,8 +236,7 @@ export default function CoursesPage() {
             {/* Toolbar */}
             <div className="mb-6 flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
               <p className="text-sm text-text-dim">
-                Viewing results:{" "}
-                <span className="font-semibold text-text">{filtered.length}</span>
+                Viewing results: <span className="font-semibold text-text">{total}</span>
                 {categoryName && (
                   <>
                     {" "}
@@ -262,8 +249,8 @@ export default function CoursesPage() {
                   <Select
                     aria-label="Sort courses"
                     value={sort}
-                    onChange={(e) => setSort(e.target.value as SortKey)}
-                    options={sortOptions}
+                    onChange={(e) => setSort(e.target.value)}
+                    options={SORT_OPTIONS}
                   />
                 </div>
                 <div className="flex items-center gap-1">
@@ -285,8 +272,18 @@ export default function CoursesPage() {
               </div>
             </div>
 
-            {/* Empty state */}
-            {filtered.length === 0 ? (
+            {error ? (
+              <div className="border border-dashed border-border bg-bg-card p-12 text-center">
+                <p className="text-lg font-medium">Couldn&apos;t load the catalogue</p>
+                <p className="mt-1 text-text-dim">{error.message}</p>
+              </div>
+            ) : loading ? (
+              <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
+                {Array.from({ length: PAGE_SIZE }).map((_, i) => (
+                  <div key={i} className="h-72 animate-pulse border border-border bg-bg-card" />
+                ))}
+              </div>
+            ) : items.length === 0 ? (
               <div className="border border-dashed border-border bg-bg-card p-12 text-center">
                 <p className="text-lg font-medium">No courses match your filters</p>
                 <p className="mt-1 text-text-dim">Try widening your search.</p>
@@ -299,13 +296,13 @@ export default function CoursesPage() {
               </div>
             ) : view === "grid" ? (
               <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
-                {pageItems.map((c) => (
+                {items.map((c) => (
                   <CourseCard key={c.slug} course={c} />
                 ))}
               </div>
             ) : (
               <div className="flex flex-col divide-y divide-border border border-border bg-bg-card">
-                {pageItems.map((c) => (
+                {items.map((c) => (
                   <CourseRow key={c.slug} course={c} />
                 ))}
               </div>
@@ -323,7 +320,7 @@ export default function CoursesPage() {
   );
 }
 
-function CourseRow({ course }: { course: Course }) {
+function CourseRow({ course }: { course: ViewCourse }) {
   return (
     <Link
       href={`/courses/${course.slug}`}
@@ -353,7 +350,7 @@ function CourseRow({ course }: { course: Course }) {
         </span>
         {course.premium ? (
           <Badge variant="warning" icon={<Lock size={11} />}>
-            Premium
+            {course.priceKES ? formatKES(course.priceKES) : "Premium"}
           </Badge>
         ) : (
           <Badge variant="success">Free</Badge>

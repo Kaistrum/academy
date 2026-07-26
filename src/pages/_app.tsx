@@ -4,8 +4,9 @@ import "@mantine/tiptap/styles.css";
 import type { AppProps } from "next/app";
 import { ThemeProvider } from "@kaistrum/stratum-ui";
 import { MantineProvider, createTheme } from "@mantine/core";
+import { AuthProvider } from "@/context/AuthContext";
+import { EnrollmentsProvider } from "@/context/EnrollmentsContext";
 import { FavouritesProvider } from "@/context/FavouritesContext";
-import { AdminProvider } from "@/context/AdminContext";
 
 // Keep Mantine (used for the Tiptap course-content editor) visually aligned
 // with the Stratum brand: teal primary, SF Pro type, sharp corners.
@@ -19,11 +20,13 @@ export default function App({ Component, pageProps }: AppProps) {
   return (
     <ThemeProvider defaultTheme="dark">
       <MantineProvider theme={mantineTheme} forceColorScheme="dark">
-        <FavouritesProvider>
-          <AdminProvider>
-            <Component {...pageProps} />
-          </AdminProvider>
-        </FavouritesProvider>
+        <AuthProvider>
+          <EnrollmentsProvider>
+            <FavouritesProvider>
+              <Component {...pageProps} />
+            </FavouritesProvider>
+          </EnrollmentsProvider>
+        </AuthProvider>
       </MantineProvider>
     </ThemeProvider>
   );

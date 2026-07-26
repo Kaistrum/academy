@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import Head from "next/head";
 import Link from "next/link";
 import { useRouter } from "next/router";
@@ -6,42 +6,50 @@ import {
   Avatar,
   Badge,
   Progress,
+  Select,
   Tabs,
   TabsContent,
   TabsList,
   TabsTrigger,
 } from "@kaistrum/stratum-ui";
-import { ArrowLeft, CreditCard, Smartphone } from "lucide-react";
+import { ArrowLeft, Award } from "lucide-react";
 import AdminLayout from "@/components/admin/AdminLayout";
-import { formatKES, getCourse } from "@/data/courses";
-import { enrollmentsForPerson, getPerson } from "@/data/learners";
-import { paymentsForBuyer, totalSpentByBuyer, type PaymentStatus } from "@/data/payments";
+import { useAsync } from "@/hooks/useAsync";
+import { useAuth } from "@/context/AuthContext";
+import { ApiError, admin, type PaymentStatus, type Role } from "@/lib/api";
+import { formatDate, formatKES } from "@/lib/catalog";
 
 const statusVariant: Record<PaymentStatus, "success" | "warning" | "danger" | "neutral"> = {
   paid: "success",
   pending: "warning",
   failed: "danger",
   refunded: "neutral",
+  abandoned: "neutral",
 };
 
 export default function AdminLearnerView() {
   const router = useRouter();
-  const [name, setName] = useState<string | null>(null);
-  const [ready, setReady] = useState(false);
+  const { status: authStatus, isAdmin } = useAuth();
+  const userId = typeof router.query.id === "string" ? router.query.id : null;
 
-  useEffect(() => {
-    const fromRouter = typeof router.query.name === "string" ? router.query.name : null;
-    setName(fromRouter ?? new URLSearchParams(window.location.search).get("name"));
-    setReady(true);
-  }, [router.query.name]);
+  const learner = useAsync(() => admin.learner(userId as string), [userId], {
+    enabled: authStatus === "authenticated" && Boolean(userId),
+  });
+  const [error, setError] = useState<string | null>(null);
 
-  const person = name ? getPerson(name) : undefined;
+  if (learner.loading || !userId) {
+    return (
+      <AdminLayout title="Learner">
+        <p className="text-text-dim">Loading…</p>
+      </AdminLayout>
+    );
+  }
 
-  if (!person || !name) {
+  if (learner.error || !learner.data) {
     return (
       <AdminLayout title="Learner">
         <p className="text-text-dim">
-          {ready ? "Learner not found." : "Loading…"}{" "}
+          {learner.error?.message ?? "Learner not found."}{" "}
           <Link href="/admin/learners" className="text-accent hover:underline">
             Back to learners
           </Link>
@@ -50,20 +58,28 @@ export default function AdminLearnerView() {
     );
   }
 
-  const enrolments = enrollmentsForPerson(name);
-  const paymentRows = paymentsForBuyer(name);
-  const spent = totalSpentByBuyer(name);
+  const { user, totals, courses, certificates, payments } = learner.data;
 
   const stats = [
-    { label: "Registered", value: String(person.registered) },
-    { label: "In progress", value: String(person.inProgress) },
-    { label: "Completed", value: String(person.completed) },
-    { label: "Total spent", value: formatKES(spent) },
+    { label: "Enrolled", value: String(totals.enrolled) },
+    { label: "Completed", value: String(totals.completed) },
+    { label: "Certificates", value: String(totals.certificates) },
+    { label: "Total spent", value: formatKES(totals.spentKES) },
   ];
+
+  async function changeRole(role: Role) {
+    setError(null);
+    try {
+      await admin.setLearnerRole(userId as string, role);
+      learner.reload();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not change the role.");
+    }
+  }
 
   return (
     <AdminLayout
-      title={person.name}
+      title={user.name}
       actions={
         <Link
           href="/admin/learners"
@@ -74,15 +90,41 @@ export default function AdminLearnerView() {
       }
     >
       <Head>
-        <title>Admin · {person.name} — Kaistrum Academy</title>
+        <title>Admin · {user.name} — Kaistrum Academy</title>
       </Head>
 
-      <div className="mb-6 flex items-center gap-3">
-        <Avatar name={person.name} size="lg" />
-        <div>
-          <p className="font-medium">{person.name}</p>
-          <p className="text-sm text-text-dim">{person.email}</p>
+      {error && (
+        <p className="mb-4 border border-danger/40 bg-danger/10 px-4 py-2 text-sm text-danger">
+          {error}
+        </p>
+      )}
+
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <Avatar name={user.name} size="lg" />
+          <div>
+            <p className="font-medium">{user.name}</p>
+            <p className="text-sm text-text-dim">{user.email}</p>
+            <p className="text-xs text-text-muted">
+              Joined {formatDate(user.createdAt)} ·{" "}
+              {user.emailVerified ? "verified" : "unverified"}
+            </p>
+          </div>
         </div>
+        {isAdmin && (
+          <div className="w-44">
+            <Select
+              label="Role"
+              value={user.role}
+              onChange={(e) => changeRole(e.target.value as Role)}
+              options={[
+                { value: "learner", label: "Learner" },
+                { value: "instructor", label: "Instructor" },
+                { value: "admin", label: "Admin" },
+              ]}
+            />
+          </div>
+        )}
       </div>
 
       <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -96,8 +138,9 @@ export default function AdminLearnerView() {
 
       <Tabs defaultValue="courses">
         <TabsList>
-          <TabsTrigger value="courses">Courses ({enrolments.length})</TabsTrigger>
-          <TabsTrigger value="payments">Payments ({paymentRows.length})</TabsTrigger>
+          <TabsTrigger value="courses">Courses ({courses.length})</TabsTrigger>
+          <TabsTrigger value="payments">Payments ({payments.length})</TabsTrigger>
+          <TabsTrigger value="certificates">Certificates ({certificates.length})</TabsTrigger>
         </TabsList>
 
         {/* Courses */}
@@ -113,35 +156,46 @@ export default function AdminLearnerView() {
                 </tr>
               </thead>
               <tbody>
-                {enrolments.map((e) => {
-                  const course = getCourse(e.courseSlug);
-                  return (
-                    <tr
-                      key={e.id}
-                      className="border-b border-border-subtle last:border-0 hover:bg-bg-surface"
-                    >
-                      <td className="px-4 py-3">
+                {courses.map((e) => (
+                  <tr
+                    key={e.enrollmentId}
+                    className="border-b border-border-subtle last:border-0 hover:bg-bg-surface"
+                  >
+                    <td className="px-4 py-3">
+                      {e.slug ? (
                         <Link
-                          href={`/admin/courses/view?slug=${e.courseSlug}`}
+                          href={`/admin/courses/view?slug=${e.slug}`}
                           className="font-medium hover:text-accent"
                         >
-                          {course?.title ?? e.courseSlug}
+                          {e.title}
                         </Link>
-                      </td>
-                      <td className="px-4 py-3 text-text-dim">{e.enrolledAt}</td>
-                      <td className="px-4 py-3">
-                        <div className="w-32">
-                          <Progress value={e.progress} showValue />
-                        </div>
-                      </td>
-                      <td className="px-4 py-3">
-                        <Badge variant={e.status === "completed" ? "success" : "neutral"}>
-                          {e.status}
-                        </Badge>
-                      </td>
-                    </tr>
-                  );
-                })}
+                      ) : (
+                        <span className="font-medium">{e.title}</span>
+                      )}
+                      <div className="text-xs text-text-muted">
+                        {e.completedLessons} of {e.lessonCount} lessons
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-text-dim">{formatDate(e.enrolledAt)}</td>
+                    <td className="px-4 py-3">
+                      <div className="w-32">
+                        <Progress value={e.progressPct} showValue />
+                      </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <Badge variant={e.status === "completed" ? "success" : "neutral"}>
+                        {e.status}
+                      </Badge>
+                    </td>
+                  </tr>
+                ))}
+                {courses.length === 0 && (
+                  <tr>
+                    <td colSpan={4} className="px-4 py-10 text-center text-text-dim">
+                      No enrolments yet.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -149,43 +203,38 @@ export default function AdminLearnerView() {
 
         {/* Payments */}
         <TabsContent value="payments">
-          {paymentRows.length === 0 ? (
+          {payments.length === 0 ? (
             <p className="py-8 text-center text-text-dim">No payments recorded.</p>
           ) : (
             <div className="mt-2 overflow-x-auto border border-border">
               <table className="w-full min-w-[680px] text-sm">
                 <thead>
                   <tr className="border-b border-border bg-bg-surface text-left text-xs uppercase tracking-[0.1em] text-text-muted">
-                    <th className="px-4 py-3 font-medium">Ref</th>
+                    <th className="px-4 py-3 font-medium">Reference</th>
                     <th className="px-4 py-3 font-medium">Date</th>
                     <th className="px-4 py-3 font-medium">Course</th>
-                    <th className="px-4 py-3 font-medium">Method</th>
+                    <th className="px-4 py-3 font-medium">Channel</th>
                     <th className="px-4 py-3 text-right font-medium">Amount</th>
                     <th className="px-4 py-3 font-medium">Status</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {paymentRows.map((p) => (
+                  {payments.map((p) => (
                     <tr
                       key={p.id}
                       className="border-b border-border-subtle last:border-0 hover:bg-bg-surface"
                     >
-                      <td className="px-4 py-3 font-mono text-xs text-text-muted">{p.id}</td>
-                      <td className="px-4 py-3 text-text-dim">{p.date}</td>
+                      <td className="px-4 py-3 font-mono text-xs text-text-muted">
+                        {p.reference}
+                      </td>
                       <td className="px-4 py-3 text-text-dim">
-                        {getCourse(p.courseSlug)?.title ?? p.courseSlug}
+                        {formatDate(p.paidAt ?? p.createdAt)}
                       </td>
-                      <td className="px-4 py-3">
-                        <span className="inline-flex items-center gap-1.5 text-text-dim">
-                          {p.method === "M-Pesa" ? (
-                            <Smartphone size={13} className="text-accent" />
-                          ) : (
-                            <CreditCard size={13} className="text-accent" />
-                          )}
-                          {p.method}
-                        </span>
+                      <td className="px-4 py-3 text-text-dim">{p.courseTitle ?? "—"}</td>
+                      <td className="px-4 py-3 text-text-dim">{p.channel ?? "—"}</td>
+                      <td className="px-4 py-3 text-right tabular-nums">
+                        {formatKES(p.amountKES)}
                       </td>
-                      <td className="px-4 py-3 text-right tabular-nums">{formatKES(p.amountKES)}</td>
                       <td className="px-4 py-3">
                         <Badge variant={statusVariant[p.status]}>{p.status}</Badge>
                       </td>
@@ -194,6 +243,24 @@ export default function AdminLearnerView() {
                 </tbody>
               </table>
             </div>
+          )}
+        </TabsContent>
+
+        {/* Certificates */}
+        <TabsContent value="certificates">
+          {certificates.length === 0 ? (
+            <p className="py-8 text-center text-text-dim">No certificates issued.</p>
+          ) : (
+            <ul className="mt-2 divide-y divide-border-subtle border border-border">
+              {certificates.map((c) => (
+                <li key={c.id} className="flex items-center gap-3 px-4 py-3 text-sm">
+                  <Award size={15} className="text-accent" />
+                  <span className="min-w-0 flex-1 truncate">{c.courseTitle ?? "—"}</span>
+                  <span className="font-mono text-xs text-text-muted">{c.serial}</span>
+                  <span className="text-xs text-text-dim">{formatDate(c.issuedAt)}</span>
+                </li>
+              ))}
+            </ul>
           )}
         </TabsContent>
       </Tabs>

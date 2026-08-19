@@ -85,6 +85,12 @@ export default function CourseEditor() {
   const tracks = useMemo(() => tracksQuery.data ?? [], [tracksQuery.data]);
   const tutors = useMemo(() => tutorsQuery.data?.data ?? [], [tutorsQuery.data]);
 
+  // A course cannot be saved without an instructor, so an empty tutor list is a
+  // blocker rather than an empty dropdown. Distinguish "none exist yet" from
+  // "the list failed to load" — the fixes are different.
+  const tutorsUnavailable = !tutorsQuery.loading && tutors.length === 0;
+  const noTutors = tutorsUnavailable && !tutorsQuery.error;
+
   // Populate from the loaded course, or seed sensible defaults for a new one.
   useEffect(() => {
     if (hydrated) return;
@@ -123,6 +129,18 @@ export default function CourseEditor() {
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
     if (!form.title.trim()) return;
+
+    // Catch the missing instructor here rather than sending a request the API
+    // will reject with a message pointing at a field name the UI doesn't use.
+    if (isAdmin && !form.instructorId) {
+      setFieldErrors({ instructorId: "Choose a tutor for this course" });
+      setError(
+        noTutors
+          ? "This course needs a tutor, and none exist yet — create one first."
+          : "Choose a tutor for this course.",
+      );
+      return;
+    }
 
     const payload: AdminCourseInput = {
       title: form.title.trim(),
@@ -203,6 +221,29 @@ export default function CourseEditor() {
         </p>
       )}
 
+      {noTutors && (
+        <div className="mb-4 border border-warning/40 bg-warning/10 px-4 py-3 text-sm">
+          <p className="font-medium text-warning">No tutors exist yet</p>
+          <p className="mt-1 text-text-dim">
+            Every course must be assigned to a tutor, so create one before adding
+            courses.{" "}
+            <Link href="/admin/tutors/editor" className="text-accent hover:underline">
+              Create a tutor →
+            </Link>
+          </p>
+        </div>
+      )}
+
+      {tutorsQuery.error && (
+        <div className="mb-4 border border-danger/40 bg-danger/10 px-4 py-3 text-sm">
+          <p className="font-medium text-danger">Could not load the tutor list</p>
+          <p className="mt-1 text-text-dim">
+            {tutorsQuery.error.message} — the course cannot be saved until this
+            loads, since the tutor is required.
+          </p>
+        </div>
+      )}
+
       <form onSubmit={handleSave} className="grid gap-6 lg:grid-cols-[1fr_320px]">
         {/* Main */}
         <div className="flex flex-col gap-5">
@@ -252,15 +293,19 @@ export default function CourseEditor() {
                 ]}
               />
               <Select
-                label="Tutor"
+                // The API calls this the course's `instructorId`; the console
+                // calls the people tutors. Say both so the server's validation
+                // message ("Choose an instructor") reads as the same field.
+                label="Tutor (instructor)"
                 value={form.instructorId}
                 onChange={(e) => set("instructorId", e.target.value)}
-                disabled={!isAdmin}
-                options={
-                  tutors.length
-                    ? tutors.map((t) => ({ value: t.id, label: t.name }))
-                    : [{ value: "", label: "No tutors yet" }]
-                }
+                disabled={!isAdmin || noTutors}
+                error={fieldErrors.instructorId}
+                hint={isAdmin ? undefined : "Only an admin can reassign a course."}
+                options={[
+                  { value: "", label: noTutors ? "No tutors yet" : "Select a tutor…" },
+                  ...tutors.map((t) => ({ value: t.id, label: t.name })),
+                ]}
               />
               <Select
                 label="Format"
@@ -347,6 +392,7 @@ export default function CourseEditor() {
                 variant="primary"
                 fullWidth
                 loading={saving}
+                disabled={isAdmin && tutorsUnavailable}
                 icon={<Save size={16} />}
               >
                 {isEdit ? "Save changes" : "Create course"}
